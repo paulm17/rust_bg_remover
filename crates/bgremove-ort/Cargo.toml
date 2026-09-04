@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 ort = { version = "2.0.0-rc.11", default-features = false, features = ["std", "load-dynamic"] }
+image.workspace = true
 
 [features]
 default = []

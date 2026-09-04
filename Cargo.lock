@@ -148,6 +148,7 @@ dependencies = [
  "anyhow",
  "bgremove-core",
  "bgremove-models",
+ "image",
  "ort",
  "serde",
  "serde_json",

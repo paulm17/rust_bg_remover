@@ -1,6 +1,6 @@
 //! Declarative model metadata. Weight loading and hash enforcement begin in M3.
 
-use anyhow::{ensure, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,88 @@ string_enum!(ChannelOrder { Rgb => "rgb", Bgr => "bgr" });
 string_enum!(Activation { None => "none", Sigmoid => "sigmoid" });
 string_enum!(OutputNormalization { None => "none", MinMax => "minmax", Clamp => "clamp" });
 string_enum!(TensorElementType { F32 => "f32", F16 => "f16", I32 => "i32", I64 => "i64" });
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelEncoding {
+    #[serde(rename = "fp32")]
+    Fp32,
+    #[serde(rename = "fp16")]
+    Fp16,
+    #[serde(rename = "quantized")]
+    Quantized,
+    #[serde(rename = "other")]
+    Other,
+}
+string_enum!(PreprocessingProfile { ImglyIsnet => "imgly-isnet", RembgDis => "rembg-dis", Generic => "generic" });
+string_enum!(ProfileOutputNormalization { Clamp => "clamp", SafeMinMax => "safe-per-image-minmax" });
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreprocessingProfileManifest {
+    pub id: String,
+    pub profile: PreprocessingProfile,
+    pub layout: ModelLayout,
+    pub resize_filter: ResizeFilter,
+    pub channel_order: ChannelOrder,
+    pub scale: f32,
+    pub mean: [f32; 3],
+    pub std: [f32; 3],
+    pub output_normalization: ProfileOutputNormalization,
+    pub restore_filter: ResizeFilter,
+}
+
+impl PreprocessingProfileManifest {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.id.trim().is_empty(),
+            "preprocessing profile id is empty"
+        );
+        ensure!(
+            self.layout == ModelLayout::Nchw,
+            "M4 profiles require NCHW layout"
+        );
+        ensure!(
+            self.channel_order == ChannelOrder::Rgb,
+            "M4 profiles require RGB channel order"
+        );
+        ensure!(
+            self.scale.is_finite() && self.std.iter().all(|v| v.is_finite() && *v > 0.0),
+            "profile normalization metadata is invalid"
+        );
+        ensure!(
+            self.mean.iter().all(|v| v.is_finite()),
+            "profile mean contains NaN or infinity"
+        );
+        match self.profile {
+            PreprocessingProfile::ImglyIsnet => ensure!(
+                self.resize_filter == ResizeFilter::Bilinear
+                    && self.restore_filter == ResizeFilter::Bilinear
+                    && self.scale == 1.0
+                    && self.mean == [128.0; 3]
+                    && self.std == [256.0; 3]
+                    && self.output_normalization == ProfileOutputNormalization::Clamp,
+                "IMG.LY profile contract mismatch"
+            ),
+            PreprocessingProfile::RembgDis => ensure!(
+                self.resize_filter == ResizeFilter::Lanczos3
+                    && self.restore_filter == ResizeFilter::Lanczos3
+                    && self.scale == 1.0
+                    && self.mean == [0.5; 3]
+                    && self.std == [1.0; 3]
+                    && self.output_normalization == ProfileOutputNormalization::SafeMinMax,
+                "rembg DIS profile contract mismatch"
+            ),
+            PreprocessingProfile::Generic => bail!("generic is not an M4 profile"),
+        }
+        Ok(())
+    }
+}
+
+pub fn parse_profile_toml(input: &str) -> Result<PreprocessingProfileManifest> {
+    let profile: PreprocessingProfileManifest = toml::from_str(input)?;
+    profile.validate()?;
+    Ok(profile)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -79,12 +161,57 @@ pub struct ModelManifest {
     pub output_type: Option<TensorElementType>,
     #[serde(default)]
     pub output_index: Option<usize>,
+    /// Algorithm family is intentionally separate from deployment encoding.
+    #[serde(default = "default_algorithm_family")]
+    pub algorithm_family: String,
+    #[serde(default = "default_model_encoding")]
+    pub model_encoding: ModelEncoding,
+    #[serde(default = "default_preprocessing_profile")]
+    pub preprocessing_profile: PreprocessingProfile,
+    /// An external file is never fetched. It is permitted only to make the
+    /// checked-in reference-tree weights auditable without committing them.
+    #[serde(default)]
+    pub external: bool,
+}
+
+fn default_algorithm_family() -> String {
+    "unspecified".into()
+}
+fn default_model_encoding() -> ModelEncoding {
+    ModelEncoding::Other
+}
+fn default_preprocessing_profile() -> PreprocessingProfile {
+    PreprocessingProfile::Generic
 }
 
 impl ModelManifest {
+    fn external_allowed(&self, base: &Path, canonical: &Path, kind: &str) -> Result<()> {
+        let workspace = base
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("manifest has no workspace parent"))?;
+        let root = workspace.join("projects/javascript/background-removal-js");
+        let allowed = match kind {
+            "model" => root.join("bundle/models"),
+            "license" => root,
+            _ => unreachable!(),
+        }
+        .canonicalize()
+        .with_context(|| format!("canonicalize pinned IMG.LY external {kind} root"))?;
+        ensure!(
+            canonical.starts_with(&allowed),
+            "model {} external {kind} is outside the pinned IMG.LY reference root",
+            self.id
+        );
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(!self.id.trim().is_empty(), "model id is empty");
         ensure!(!self.family.trim().is_empty(), "model family is empty");
+        ensure!(
+            !self.algorithm_family.trim().is_empty(),
+            "model algorithm family is empty"
+        );
         ensure!(
             (self.width > 0 && self.height > 0)
                 || self
@@ -162,11 +289,12 @@ impl ModelManifest {
         let path = base.join(&self.file);
         let canonical_base = base.canonicalize()?;
         let canonical = path.canonicalize()?;
-        ensure!(
-            canonical.starts_with(&canonical_base),
-            "model {} resolves outside manifest directory",
-            self.id
-        );
+        ensure!(self.external || canonical.starts_with(&canonical_base),
+            "model {} resolves outside manifest directory; set external=true only for a supplied, hashed reference-tree file",
+            self.id);
+        if self.external {
+            self.external_allowed(base, &canonical, "model")?;
+        }
         Ok(canonical)
     }
 
@@ -174,11 +302,12 @@ impl ModelManifest {
         let base = manifest_path.parent().unwrap_or_else(|| Path::new("."));
         let license = base.join(&self.license_file).canonicalize()?;
         let canonical_base = base.canonicalize()?;
-        ensure!(
-            license.starts_with(&canonical_base),
-            "model {} license resolves outside manifest directory",
-            self.id
-        );
+        ensure!(self.external || license.starts_with(&canonical_base),
+            "model {} license resolves outside manifest directory; set external=true only for supplied metadata",
+            self.id);
+        if self.external {
+            self.external_allowed(base, &license, "license")?;
+        }
         let license_bytes = std::fs::read(&license)?;
         let license_digest = sha2::Sha256::digest(&license_bytes);
         let license_actual = license_digest
@@ -287,6 +416,58 @@ mod tests {
         assert!(parse_toml(&text.replace(
             "input_shape = [\"batch\", \"channel\", \"height\", \"width\"]",
             "input_shape = [\"\", \"channel\", \"height\", \"width\"]"
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn m4_manifests_pin_distinct_encodings_and_profiles() {
+        let paths = [
+            "../../models/m4_isnet_fp32.toml",
+            "../../models/m4_isnet_fp16.toml",
+            "../../models/m4_isnet_quantized.toml",
+        ];
+        let manifests = paths
+            .iter()
+            .map(|path| parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert!(manifests.iter().all(|m| m.algorithm_family == "isnet"));
+        assert_eq!(
+            manifests
+                .iter()
+                .map(|m| m.model_encoding)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3
+        );
+        assert!(manifests
+            .iter()
+            .all(|m| m.preprocessing_profile == PreprocessingProfile::ImglyIsnet));
+        assert!(manifests
+            .iter()
+            .zip(paths)
+            .all(|(m, path)| m.verify_model_hash(std::path::Path::new(path)).is_ok()));
+        let rembg_path = "../../models/m4_isnet_fp32_rembg.toml";
+        let rembg = parse_toml(&std::fs::read_to_string(rembg_path).unwrap()).unwrap();
+        assert_eq!(rembg.preprocessing_profile, PreprocessingProfile::RembgDis);
+        assert!(rembg
+            .verify_model_hash(std::path::Path::new(rembg_path))
+            .is_ok());
+    }
+
+    #[test]
+    fn rembg_profile_registry_is_typed_and_tamper_resistant() {
+        let text = std::fs::read_to_string("../../models/m4_rembg_dis_profile.toml").unwrap();
+        let profile = parse_profile_toml(&text).unwrap();
+        assert_eq!(profile.profile, PreprocessingProfile::RembgDis);
+        assert!(parse_profile_toml(&text.replace(
+            "resize_filter = \"lanczos3\"",
+            "resize_filter = \"bilinear\""
+        ))
+        .is_err());
+        assert!(parse_profile_toml(&text.replace(
+            "output_normalization = \"safe-per-image-minmax\"",
+            "output_normalization = \"clamp\""
         ))
         .is_err());
     }

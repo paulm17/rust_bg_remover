@@ -74,6 +74,22 @@ enum Command {
         #[arg(long, default_value_t = 2)]
         workers: usize,
     },
+    /// Run the deterministic M4 tensor/profile smoke report. No checkpoint
+    /// is downloaded; runtime parity is enabled only with ORT_DYLIB.
+    M4Smoke {
+        #[arg(long)]
+        input: Option<PathBuf>,
+        #[arg(long, default_value = "models/m4_isnet_fp32.toml")]
+        manifest: PathBuf,
+        #[arg(long, default_value = "imgly-isnet")]
+        profile: String,
+        #[arg(long, default_value = "cpu")]
+        provider: String,
+        #[arg(long, default_value = "runs/m4-isnet")]
+        output: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        workers: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -303,7 +319,188 @@ fn main() -> Result<()> {
             output,
             workers,
         } => write_m3_smoke(&manifest, &output, workers)?,
+        Command::M4Smoke {
+            input,
+            manifest,
+            profile,
+            provider,
+            output,
+            workers,
+        } => write_m4_smoke(
+            &output,
+            input.as_deref(),
+            &manifest,
+            &profile,
+            &provider,
+            workers,
+        )?,
     }
+    Ok(())
+}
+
+fn write_m4_smoke(
+    output: &Path,
+    input: Option<&Path>,
+    manifest_path: &Path,
+    profile_name: &str,
+    provider_name: &str,
+    workers: usize,
+) -> Result<()> {
+    use bgremove_models::PreprocessingProfile;
+    let profile_text = match profile_name {
+        "imgly-isnet" => None,
+        "rembg-dis" => Some(fs::read_to_string("models/m4_rembg_dis_profile.toml")?),
+        other => bail!("unknown M4 profile {other}; expected imgly-isnet or rembg-dis"),
+    };
+    if let Some(text) = profile_text {
+        let profile_manifest = bgremove_models::parse_profile_toml(&text)?;
+        ensure!(
+            profile_manifest.profile == PreprocessingProfile::RembgDis,
+            "profile registry mismatch"
+        );
+    }
+    let effective_manifest =
+        if profile_name == "rembg-dis" && manifest_path == Path::new("models/m4_isnet_fp32.toml") {
+            Path::new("models/m4_isnet_fp32_rembg.toml")
+        } else {
+            manifest_path
+        };
+    let manifest_text = fs::read_to_string(effective_manifest)?;
+    let manifest = bgremove_models::parse_toml(&manifest_text)?;
+    let profile = match profile_name {
+        "imgly-isnet" => PreprocessingProfile::ImglyIsnet,
+        "rembg-dis" => PreprocessingProfile::RembgDis,
+        other => bail!("unknown M4 profile {other}; expected imgly-isnet or rembg-dis"),
+    };
+    let requested = match provider_name {
+        "cpu" => bgremove_ort::RequestedProvider::Cpu,
+        "coreml" => bgremove_ort::RequestedProvider::Coreml,
+        "cuda" => bgremove_ort::RequestedProvider::Cuda,
+        other => bail!("unknown provider {other}; expected cpu, coreml, or cuda"),
+    };
+    let rgb = bgremove_core::RgbImageF32::new(
+        3,
+        2,
+        vec![
+            [0.0, 0.25, 1.0],
+            [1.0, 0.5, 0.0],
+            [0.2, 0.4, 0.6],
+            [0.9, 0.1, 0.3],
+            [0.7, 0.8, 0.05],
+            [1.0, 1.0, 1.0],
+        ],
+    )?;
+    let image = bgremove_core::CanonicalImage::from_rgb(rgb);
+    let imgly = bgremove_ort::isnet_preprocess_rgb(&image, PreprocessingProfile::ImglyIsnet)?;
+    let rembg = bgremove_ort::isnet_preprocess_rgb(&image, PreprocessingProfile::RembgDis)?;
+    let hash_f32 = |values: &[f32]| {
+        let mut h = Sha256::new();
+        for value in values {
+            h.update(value.to_le_bytes());
+        }
+        h.finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let hash_bytes = |bytes: &[u8]| {
+        let mut h = Sha256::new();
+        h.update(bytes);
+        h.finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let manifests = [
+        ("fp32", "models/m4_isnet_fp32.toml"),
+        ("fp16", "models/m4_isnet_fp16.toml"),
+        ("quantized", "models/m4_isnet_quantized.toml"),
+    ]
+    .into_iter()
+    .map(|(encoding, path)| {
+        let text = fs::read(path)?;
+        let manifest = bgremove_models::parse_toml(std::str::from_utf8(&text)?)?;
+        Ok::<_, anyhow::Error>(serde_json::json!({
+            "encoding": encoding,
+            "id": manifest.id,
+            "algorithm_family": manifest.algorithm_family,
+            "model_sha256": manifest.sha256,
+            "manifest_sha256": hash_bytes(&text),
+            "available": manifest.verify_model_hash(Path::new(path)).is_ok()
+        }))
+    })
+    .collect::<Result<Vec<_>>>()?;
+    let reference = serde_json::from_str::<serde_json::Value>(&fs::read_to_string(
+        "tests/fixtures/m4/parity.json",
+    )?)?;
+    let rembg_pillow = serde_json::from_str::<serde_json::Value>(&fs::read_to_string(
+        "tests/fixtures/m4/rembg-pillow-fixture.json",
+    )?)?;
+    let reference_raw_comparison = reference
+        .get("raw_comparison")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let reference_verdict = reference
+        .get("verdict")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let mut sample = Vec::new();
+    for &i in &[0usize, 1, 1023, 1024, 1024 * 1024 - 1] {
+        sample.push(imgly.values[i]);
+        sample.push(imgly.values[1024 * 1024 + i]);
+        sample.push(imgly.values[2 * 1024 * 1024 + i]);
+    }
+    fs::create_dir_all(output)?;
+    let runtime_run = if let Some(input_path) = input {
+        let runtime = std::env::var_os("ORT_DYLIB").ok_or_else(|| anyhow!("ORT_DYLIB must point to an installed full ONNX Runtime; runtime downloads are disabled"))?;
+        let image = load_canonical(input_path)?;
+        let segmenter = bgremove_ort::IsnetSegmenter::new(
+            &manifest,
+            effective_manifest,
+            Path::new(&runtime),
+            workers,
+            profile,
+            requested,
+            false,
+        )?;
+        let evidence = segmenter.predict_with_evidence(&image)?;
+        let cutout = bgremove_ort::isnet_straight_cutout(&image, evidence.restored.clone())?;
+        fs::write(
+            output.join("mask.png"),
+            encode_mask_png(&evidence.restored)?,
+        )?;
+        fs::write(
+            output.join("cutout.png"),
+            encode_straight_rgba_png(&cutout)?,
+        )?;
+        let input_hash = hash_f32(&evidence.tensor.values);
+        let raw_hash = hash_f32(&evidence.raw_output.values);
+        serde_json::json!({"input":input_path.display().to_string(),"dimensions":[image.width(),image.height()],"tensor_sha256":input_hash,"tensor_samples":evidence.tensor.values.iter().step_by(1024*1024).take(3).copied().collect::<Vec<_>>(),"raw_output_sha256":raw_hash,"raw_min":evidence.raw_output.values.iter().copied().fold(f32::INFINITY,f32::min),"raw_max":evidence.raw_output.values.iter().copied().fold(f32::NEG_INFINITY,f32::max),"raw_mean":evidence.raw_output.values.iter().sum::<f32>()/evidence.raw_output.values.len() as f32,"restored_mask_sha256":hash_bytes(&encode_mask_png(&evidence.restored)?),"cutout_sha256":hash_bytes(&encode_straight_rgba_png(&cutout)?),"provider":segmenter.provider(),"status":"pass"})
+    } else {
+        serde_json::json!({"status":"fixture-only"})
+    };
+    let report = serde_json::json!({
+        "schema": "m4.isnet-smoke.v1",
+        "algorithm_family": "isnet",
+        "encodings": ["fp32", "fp16", "quantized"],
+        "models": manifests,
+        "preprocessing_profiles": {
+            "imgly-isnet": {"formula":"(u8-128)/256", "layout":"nchw", "resize":"js-corner-aligned-bilinear-u8"},
+            "rembg-dis": {"formula":"u8/max(resized_u8).max(1e-6)-0.5", "layout":"nchw", "resize":"deterministic-lanczos3", "output":"safe-per-image-minmax"}
+        },
+        "unit_fixture": {"dimensions":[3,2], "imgly_tensor_sha256":hash_f32(&imgly.values), "rembg_tensor_sha256":hash_f32(&rembg.values), "imgly_samples":sample},
+        "reference": reference,
+        "rembg_pillow": rembg_pillow,
+        "parity": {"input_tensor_max_abs_tolerance": 0.0, "raw_float_max_abs_tolerance": 0.000001, "raw_float_mean_abs_tolerance": 0.0000001, "restored_u8_max_abs_tolerance": 0, "raw_comparison": reference_raw_comparison, "verdict": reference_verdict},
+        "manifest": {"id":manifest.id,"algorithm_family":manifest.algorithm_family,"model_encoding":manifest.model_encoding,"sha256":manifest.sha256,"profile":manifest.preprocessing_profile},
+        "provider": runtime_run.get("provider").cloned().unwrap_or(serde_json::json!({"requested":provider_name,"active":"not-run"})),
+        "runtime_run": runtime_run,
+        "deterministic": true
+    });
+    let mut bytes = serde_json::to_vec_pretty(&report)?;
+    bytes.push(b'\n');
+    fs::write(output.join("report.json"), bytes)?;
+    println!("wrote {}", output.display());
     Ok(())
 }
 

@@ -1,0 +1,12 @@
+# Preprocessing/postprocessing profile only. No DIS checkpoint is bundled or
+# inferred from an IMG.LY encoding; a model manifest must opt into this name.
+id = "rembg-dis-profile@1"
+profile = "rembg-dis"
+layout = "nchw"
+resize_filter = "lanczos3"
+channel_order = "rgb"
+scale = 1.0
+mean = [0.5, 0.5, 0.5]
+std = [1.0, 1.0, 1.0]
+output_normalization = "safe-per-image-minmax"
+restore_filter = "lanczos3"

@@ -9,6 +9,9 @@
 !/runs/m2-correctness/*
 !/runs/m3-ort/
 !/runs/m3-ort/report.json
+!/runs/m4-isnet/
+/runs/m4-isnet/*
+!/runs/m4-isnet/report.json
 /models/*.onnx
 /models/*.ort
 /corpus/inputs/
