@@ -19,6 +19,7 @@ bgremove-core = { path = "../bgremove-core" }
 bgremove-color = { path = "../bgremove-color" }
 bgremove-matting = { path = "../bgremove-matting" }
 bgremove-models = { path = "../bgremove-models" }
+bgremove-ort = { path = "../bgremove-ort" }
 
 [dev-dependencies]
 image.workspace = true

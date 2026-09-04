@@ -19,3 +19,5 @@ sha2.workspace = true
 bgremove-core = { path = "../bgremove-core" }
 bgremove-color = { path = "../bgremove-color" }
 bgremove-matting = { path = "../bgremove-matting" }
+bgremove-ort = { path = "../bgremove-ort" }
+bgremove-models = { path = "../bgremove-models" }

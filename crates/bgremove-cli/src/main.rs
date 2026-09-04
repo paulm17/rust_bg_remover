@@ -43,10 +43,14 @@ enum Command {
         #[arg(long, default_value = "multiply-predicted", value_parser = parse_policy)]
         transparent_input_policy: TransparentInputPolicy,
     },
-    /// Inspect a declarative model manifest without loading weights.
+    /// Verify the M3 model manifest and inspect its ONNX graph.
     InspectModel {
-        #[arg(long, default_value = "models/noop.toml")]
+        #[arg(long, default_value = "models/m3_identity.toml")]
         manifest: PathBuf,
+        #[arg(long, default_value = "cpu")]
+        provider: String,
+        #[arg(long)]
+        allow_provider_fallback: bool,
     },
 }
 
@@ -77,7 +81,11 @@ fn main() -> Result<()> {
             output,
             transparent_input_policy,
         } => execute(&input, &output, "mask", transparent_input_policy),
-        Command::InspectModel { manifest } => inspect(&manifest),
+        Command::InspectModel {
+            manifest,
+            provider,
+            allow_provider_fallback,
+        } => inspect(&manifest, &provider, allow_provider_fallback),
     }
 }
 
@@ -146,7 +154,7 @@ fn execute(
     Ok(())
 }
 
-fn inspect(path: &Path) -> Result<()> {
+fn inspect(path: &Path, provider: &str, fallback: bool) -> Result<()> {
     let text = fs::read_to_string(path).with_context(|| {
         format!(
             "read model manifest {}; supply --manifest to a tracked manifest",
@@ -155,9 +163,24 @@ fn inspect(path: &Path) -> Result<()> {
     })?;
     let manifest = parse_toml(&text)
         .with_context(|| format!("parse TOML model manifest {}", path.display()))?;
-    println!(
-        "model={} family={} size={}x{} runtime=deferred-until-M3",
-        manifest.id, manifest.family, manifest.width, manifest.height
-    );
+    let requested = match provider {
+        "cpu" => bgremove_ort::RequestedProvider::Cpu,
+        "coreml" => bgremove_ort::RequestedProvider::Coreml,
+        "cuda" => bgremove_ort::RequestedProvider::Cuda,
+        other => anyhow::bail!("unknown provider {other}; expected cpu, coreml, or cuda"),
+    };
+    let runtime = std::env::var_os("ORT_DYLIB").ok_or_else(|| {
+        anyhow::anyhow!(
+            "ORT_DYLIB must name an existing ONNX Runtime dylib; runtime downloads are disabled"
+        )
+    })?;
+    let session = bgremove_ort::VerifiedSession::open(
+        &manifest,
+        path,
+        Path::new(&runtime),
+        requested,
+        fallback,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&session.inspection)?);
     Ok(())
 }

@@ -1,0 +1,6 @@
+M3 identity fixture provenance
+
+This ONNX graph was generated locally by tools/generate_fixture.py for this
+project. It contains only the standard ONNX Relu operator and has no
+third-party weights. It is released under the repository MIT OR Apache-2.0
+license. Opset 13; model semantics are documented in M3.md.

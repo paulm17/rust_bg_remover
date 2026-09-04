@@ -23,3 +23,7 @@ license_file = "not-applicable"
 license_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 intended_use_approved = true
 opset = 0
+input_shape = [1, 3, 1, 1]
+output_shape = [1, 1, 1, 1]
+input_type = "f32"
+output_type = "f32"

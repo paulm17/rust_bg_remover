@@ -1,6 +1,6 @@
 // M0 corpus validator and M2 deterministic benchmark implementation.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use bgremove_color::OriginalRgbEstimator;
 use bgremove_core::io::{encode_mask_png, encode_straight_rgba_png, load_canonical};
 use bgremove_core::{NoOpSegmenter, Pipeline, PipelineConfig, TransparentInputPolicy};
@@ -64,6 +64,15 @@ enum Command {
         left: PathBuf,
         #[arg(long)]
         right: PathBuf,
+    },
+    /// Run the checked-in M3 CPU fixture twice and write a deterministic report.
+    M3Smoke {
+        #[arg(long, default_value = "models/m3_identity.toml")]
+        manifest: PathBuf,
+        #[arg(long, default_value = "runs/m3-ort")]
+        output: PathBuf,
+        #[arg(long, default_value_t = 2)]
+        workers: usize,
     },
 }
 
@@ -289,7 +298,90 @@ fn main() -> Result<()> {
             transparent_input_policy,
         } => write_m2_run(&input, &output, transparent_input_policy)?,
         Command::Compare { left, right } => compare_m2_runs(&left, &right)?,
+        Command::M3Smoke {
+            manifest,
+            output,
+            workers,
+        } => write_m3_smoke(&manifest, &output, workers)?,
     }
+    Ok(())
+}
+
+fn write_m3_smoke(manifest_path: &Path, output: &Path, workers: usize) -> Result<()> {
+    let manifest = bgremove_models::parse_toml(&fs::read_to_string(manifest_path)?)?;
+    let runtime = std::env::var_os("ORT_DYLIB").ok_or_else(|| anyhow!("ORT_DYLIB must point to an installed ONNX Runtime dylib; runtime downloads are disabled"))?;
+    let pool = std::sync::Arc::new(bgremove_ort::SessionPool::new(
+        &manifest,
+        manifest_path,
+        Path::new(&runtime),
+        workers,
+        bgremove_ort::RequestedProvider::Cpu,
+        false,
+    )?);
+    let run_once = |shape: &[i64]| -> Result<bgremove_ort::TensorOutput> {
+        let n = shape.iter().product::<i64>() as usize;
+        let values = (0..n)
+            .map(|i| i as f32 / (n.saturating_sub(1).max(1) as f32))
+            .collect::<Vec<_>>();
+        let mut lease = pool.checkout();
+        let output = lease.session_mut().run(shape, &values)?;
+        ensure!(output.shape == shape, "M3 fixture changed output shape");
+        ensure!(
+            output.values == values,
+            "M3 fixture arithmetic output changed"
+        );
+        Ok(output)
+    };
+    let first = run_once(&[1, 3, 2, 3])?;
+    let second = run_once(&[1, 3, 3, 5])?;
+    let mut joins: Vec<std::thread::JoinHandle<Result<bgremove_ort::TensorOutput>>> = Vec::new();
+    for _ in 0..4 {
+        let shared = std::sync::Arc::clone(&pool);
+        joins.push(std::thread::spawn(move || {
+            let mut lease = shared.checkout();
+            let values = vec![0.25_f32; 6];
+            let output = lease.session_mut().run(&[1, 3, 1, 2], &values)?;
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            Ok(output)
+        }));
+    }
+    for join in joins {
+        join.join()
+            .map_err(|_| anyhow!("M3 pool worker panicked"))??;
+    }
+    ensure!(
+        pool.max_active() <= workers,
+        "session pool exceeded worker bound"
+    );
+    let inspection = {
+        let mut lease = pool.checkout();
+        let mut inspection = lease.session_mut().inspection.clone();
+        inspection.model_path = manifest_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(&manifest.file)
+            .display()
+            .to_string();
+        inspection
+    };
+    let provider = inspection.provider.clone();
+    let hash = |v: &[f32]| {
+        let mut h = Sha256::new();
+        for x in v {
+            h.update(x.to_le_bytes());
+        }
+        let digest = h.finalize();
+        digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    fs::create_dir_all(output)?;
+    let report = serde_json::json!({"schema":"m3.ort-smoke.v1","manifest":manifest_path.display().to_string(),"model_sha256":manifest.sha256,"inspection":inspection,"provider":provider,"workers":workers,"max_concurrent_sessions":workers,"observed_max_concurrency":pool.max_active(),"runs":[{"shape":first.shape,"values":first.values,"values_sha256":hash(&first.values)},{"shape":second.shape,"values":second.values,"values_sha256":hash(&second.values)}],"deterministic":true,"runtime_linkage":"external ORT_DYLIB; never downloaded by inference"});
+    let mut bytes = serde_json::to_vec_pretty(&report)?;
+    bytes.push(b'\n');
+    fs::write(output.join("report.json"), bytes)?;
+    println!("wrote {}", output.display());
     Ok(())
 }
 

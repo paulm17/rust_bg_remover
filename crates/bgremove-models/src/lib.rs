@@ -2,6 +2,43 @@
 
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
+use std::path::{Path, PathBuf};
+
+macro_rules! string_enum {
+    ($name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "kebab-case")]
+        pub enum $name { $(#[serde(rename = $value)] $variant),+ }
+    };
+}
+
+string_enum!(ModelLayout { Nchw => "nchw", Nhwc => "nhwc" });
+string_enum!(AspectPolicy { Stretch => "stretch", Identity => "identity", Dynamic => "dynamic" });
+string_enum!(ResizeFilter { Nearest => "nearest", Bilinear => "bilinear", Triangle => "triangle", Bicubic => "bicubic", Lanczos3 => "lanczos3" });
+string_enum!(ChannelOrder { Rgb => "rgb", Bgr => "bgr" });
+string_enum!(Activation { None => "none", Sigmoid => "sigmoid" });
+string_enum!(OutputNormalization { None => "none", MinMax => "minmax", Clamp => "clamp" });
+string_enum!(TensorElementType { F32 => "f32", F16 => "f16", I32 => "i32", I64 => "i64" });
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DimensionSpec {
+    Static(u64),
+    Dynamic(String),
+}
+impl DimensionSpec {
+    fn validate(&self, field: &str) -> Result<()> {
+        match self {
+            Self::Static(value) => ensure!(*value > 0, "{field} contains static zero dimension"),
+            Self::Dynamic(symbol) => ensure!(
+                !symbol.trim().is_empty(),
+                "{field} contains an empty dynamic dimension symbol"
+            ),
+        }
+        Ok(())
+    }
+}
 
 /// A tracked model manifest containing only declarative metadata in M1.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -13,17 +50,17 @@ pub struct ModelManifest {
     pub sha256: String,
     pub input_name: String,
     pub output_name: String,
-    pub layout: String,
+    pub layout: ModelLayout,
     pub width: u32,
     pub height: u32,
-    pub aspect: String,
-    pub resize_filter: String,
-    pub channel_order: String,
+    pub aspect: AspectPolicy,
+    pub resize_filter: ResizeFilter,
+    pub channel_order: ChannelOrder,
     pub scale: f32,
     pub mean: [f32; 3],
     pub std: [f32; 3],
-    pub activation: String,
-    pub output_normalization: String,
+    pub activation: Activation,
+    pub output_normalization: OutputNormalization,
     pub source_url: String,
     pub source_commit: String,
     pub model_version: String,
@@ -32,6 +69,16 @@ pub struct ModelManifest {
     pub license_sha256: String,
     pub intended_use_approved: bool,
     pub opset: u32,
+    #[serde(default)]
+    pub input_shape: Vec<DimensionSpec>,
+    #[serde(default)]
+    pub output_shape: Vec<DimensionSpec>,
+    #[serde(default)]
+    pub input_type: Option<TensorElementType>,
+    #[serde(default)]
+    pub output_type: Option<TensorElementType>,
+    #[serde(default)]
+    pub output_index: Option<usize>,
 }
 
 impl ModelManifest {
@@ -39,8 +86,12 @@ impl ModelManifest {
         ensure!(!self.id.trim().is_empty(), "model id is empty");
         ensure!(!self.family.trim().is_empty(), "model family is empty");
         ensure!(
-            self.width > 0 && self.height > 0,
-            "model dimensions must be positive"
+            (self.width > 0 && self.height > 0)
+                || self
+                    .input_shape
+                    .iter()
+                    .any(|d| matches!(d, DimensionSpec::Dynamic(_))),
+            "model dimensions must be positive unless dynamic input dimensions are declared"
         );
         ensure!(self.file.trim() != "", "model file is empty");
         ensure!(
@@ -54,12 +105,6 @@ impl ModelManifest {
         for (name, value) in [
             ("input_name", self.input_name.as_str()),
             ("output_name", self.output_name.as_str()),
-            ("layout", self.layout.as_str()),
-            ("aspect", self.aspect.as_str()),
-            ("resize_filter", self.resize_filter.as_str()),
-            ("channel_order", self.channel_order.as_str()),
-            ("activation", self.activation.as_str()),
-            ("output_normalization", self.output_normalization.as_str()),
         ] {
             ensure!(!value.trim().is_empty(), "model {name} is empty");
         }
@@ -99,7 +144,100 @@ impl ModelManifest {
             self.std.iter().all(|v| *v > 0.0),
             "model std must be positive"
         );
+        if let Some(index) = self.output_index {
+            ensure!(index < 1024, "model output index is unreasonably large");
+        }
+        for dimension in &self.input_shape {
+            dimension.validate("input_shape")?;
+        }
+        for dimension in &self.output_shape {
+            dimension.validate("output_shape")?;
+        }
         Ok(())
+    }
+
+    pub fn resolve_model_path(&self, manifest_path: &Path) -> Result<PathBuf> {
+        self.validate()?;
+        let base = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+        let path = base.join(&self.file);
+        let canonical_base = base.canonicalize()?;
+        let canonical = path.canonicalize()?;
+        ensure!(
+            canonical.starts_with(&canonical_base),
+            "model {} resolves outside manifest directory",
+            self.id
+        );
+        Ok(canonical)
+    }
+
+    pub fn verify_model_hash(&self, manifest_path: &Path) -> Result<PathBuf> {
+        let base = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+        let license = base.join(&self.license_file).canonicalize()?;
+        let canonical_base = base.canonicalize()?;
+        ensure!(
+            license.starts_with(&canonical_base),
+            "model {} license resolves outside manifest directory",
+            self.id
+        );
+        let license_bytes = std::fs::read(&license)?;
+        let license_digest = sha2::Sha256::digest(&license_bytes);
+        let license_actual = license_digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        ensure!(
+            license_actual == self.license_sha256,
+            "model {} license hash mismatch: expected {}, actual {}",
+            self.id,
+            self.license_sha256,
+            license_actual
+        );
+        let path = self.resolve_model_path(manifest_path)?;
+        let bytes = std::fs::read(&path)?;
+        let digest = sha2::Sha256::digest(&bytes);
+        let actual = digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        ensure!(
+            actual == self.sha256,
+            "model {} hash mismatch: expected {}, actual {}",
+            self.id,
+            self.sha256,
+            actual
+        );
+        ensure!(
+            self.intended_use_approved,
+            "model {} is not approved for intended use",
+            self.id
+        );
+        Ok(path)
+    }
+}
+
+impl std::fmt::Display for ModelLayout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Nchw => "nchw",
+                Self::Nhwc => "nhwc",
+            }
+        )
+    }
+}
+impl std::fmt::Display for AspectPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Stretch => "stretch",
+                Self::Identity => "identity",
+                Self::Dynamic => "dynamic",
+            }
+        )
     }
 }
 
@@ -124,5 +262,32 @@ mod tests {
     fn malformed_numeric_metadata_fails_closed() {
         let text = include_str!("../../../models/noop.toml").replace("scale = 1.0", "scale = inf");
         assert!(parse_toml(&text).is_err());
+    }
+
+    #[test]
+    fn m3_fixture_manifest_verifies_model_and_license_hashes() {
+        let path = std::path::Path::new("../../models/m3_identity.toml");
+        let manifest = parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let model = manifest.verify_model_hash(path).unwrap();
+        assert!(model.ends_with("models/fixtures/m3_identity.onnx"));
+        assert!(manifest
+            .input_shape
+            .iter()
+            .all(|d| matches!(d, DimensionSpec::Dynamic(_))));
+    }
+
+    #[test]
+    fn dimensions_reject_zero_static_and_empty_dynamic_symbols() {
+        let text = include_str!("../../../models/m3_identity.toml");
+        assert!(parse_toml(&text.replace(
+            "input_shape = [\"batch\", \"channel\", \"height\", \"width\"]",
+            "input_shape = [0, \"channel\", \"height\", \"width\"]"
+        ))
+        .is_err());
+        assert!(parse_toml(&text.replace(
+            "input_shape = [\"batch\", \"channel\", \"height\", \"width\"]",
+            "input_shape = [\"\", \"channel\", \"height\", \"width\"]"
+        ))
+        .is_err());
     }
 }

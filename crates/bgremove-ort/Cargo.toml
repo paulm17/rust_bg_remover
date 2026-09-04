@@ -3,7 +3,18 @@ name = "bgremove-ort"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "M1 ONNX Runtime boundary; inference is intentionally deferred"
+description = "Verified CPU ONNX Runtime inference and bounded session pools"
 
 [dependencies]
 bgremove-core = { path = "../bgremove-core" }
+bgremove-models = { path = "../bgremove-models" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ort = { version = "2.0.0-rc.11", default-features = false, features = ["std", "load-dynamic"] }
+
+[features]
+default = []
+coreml = ["ort/coreml"]
+cuda = ["ort/cuda"]

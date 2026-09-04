@@ -7,6 +7,8 @@
 !/runs/m1-skeleton/run.json
 !/runs/m2-correctness/
 !/runs/m2-correctness/*
+!/runs/m3-ort/
+!/runs/m3-ort/report.json
 /models/*.onnx
 /models/*.ort
 /corpus/inputs/
