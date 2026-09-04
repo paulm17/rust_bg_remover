@@ -1,0 +1,10 @@
+/target/
+/runs/*
+!/runs/m0-baseline/
+!/runs/m0-baseline/report.json
+/models/*.onnx
+/models/*.ort
+/corpus/inputs/
+/corpus/references/
+/projects/
+.DS_Store

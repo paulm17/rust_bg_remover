@@ -1,0 +1,1296 @@
+//! M0-only corpus and reference gate.
+//!
+//! This binary intentionally stops at corpus freezing and trivial alpha
+//! baselines. Typed inference/pipeline contracts belong to M1 and later.
+
+use anyhow::{anyhow, bail, Context, Result};
+use clap::{Parser, Subcommand};
+use image::{GenericImageView, ImageDecoder, ImageReader};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+
+const SCHEMA_VERSION: &str = "m0.corpus.v1";
+const BASELINE_REPORT_VERSION: &str = "m0.baseline.v1";
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "bgremove-m0",
+    version,
+    about = "M0 corpus validator and baseline"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Validate every manifest record, image, hash, split and leakage rule.
+    Validate {
+        #[arg(long, default_value = "corpus/manifest.jsonl")]
+        manifest: PathBuf,
+    },
+    /// Generate a deterministic all-zero/all-one alpha baseline report.
+    Baseline {
+        #[arg(long, default_value = "corpus/manifest.jsonl")]
+        manifest: PathBuf,
+        #[arg(long, default_value = "runs/m0-baseline/report.json")]
+        output: PathBuf,
+    },
+    /// Run validation and then write the deterministic baseline report.
+    Check {
+        #[arg(long, default_value = "corpus/manifest.jsonl")]
+        manifest: PathBuf,
+        #[arg(long, default_value = "runs/m0-baseline/report.json")]
+        output: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum Split {
+    Tune,
+    Validation,
+    Blind,
+}
+
+impl Split {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Tune => "tune",
+            Self::Validation => "validation",
+            Self::Blind => "blind",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum SubjectPolicy {
+    PrimarySubject,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum ShadowPolicy {
+    PreserveTargetEffects,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ManifestRecord {
+    schema_version: String,
+    id: String,
+    input: String,
+    reference: String,
+    input_sha256: String,
+    reference_sha256: String,
+    input_decoded_sha256: String,
+    reference_decoded_sha256: String,
+    width: u32,
+    height: u32,
+    input_width: u32,
+    input_height: u32,
+    reference_width: u32,
+    reference_height: u32,
+    input_orientation: String,
+    reference_orientation: String,
+    input_alpha_present: bool,
+    reference_alpha_present: bool,
+    reference_png_bit_depth: Option<u8>,
+    reference_png_color_type: Option<u8>,
+    reference_png_color_metadata: String,
+    reference_alpha_levels: u16,
+    tags: Vec<String>,
+    split: Split,
+    subject_policy: SubjectPolicy,
+    shadow_policy: ShadowPolicy,
+    prompt: Option<serde_json::Value>,
+    reference_created_at: Option<String>,
+    reference_tool: Option<String>,
+    reference_tool_version: Option<String>,
+    duplicate_group: String,
+    notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArenaRecord {
+    id: String,
+    input: String,
+    target: String,
+    challenge: String,
+    split: Split,
+    duplicate_group: String,
+    fractional_alpha_reported: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct ValidationSummary {
+    schema_version: &'static str,
+    manifest: String,
+    records: usize,
+    split_counts: BTreeMap<String, usize>,
+    coverage: Coverage,
+    blind_excluded_from_tuning: bool,
+    valid: bool,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct Coverage {
+    observed_tags: Vec<String>,
+    missing_taxonomy_tags: Vec<String>,
+    limitation: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BaselineReport {
+    report_version: &'static str,
+    schema_version: &'static str,
+    manifest: String,
+    metric_definition: MetricDefinition,
+    tuning_policy: TuningPolicy,
+    images: Vec<BaselineImage>,
+    aggregate: Aggregate,
+    coverage: Coverage,
+    gate: GateStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct MetricDefinition {
+    alpha_mae: String,
+    soft_iou: String,
+    alpha_levels: String,
+    comparison: String,
+}
+#[derive(Debug, Serialize)]
+struct TuningPolicy {
+    blind_is_evaluation_only: bool,
+    sweep_inputs: Vec<String>,
+    statement: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GateStatus {
+    status: &'static str,
+    every_item_valid: bool,
+    blind_not_used_by_sweeps: bool,
+    coverage_limitations_declared: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct BaselineImage {
+    id: String,
+    split: Split,
+    width: u32,
+    height: u32,
+    reference_fractional_alpha: f64,
+    zero: BaselineCandidate,
+    one: BaselineCandidate,
+}
+
+#[derive(Debug, Serialize)]
+struct BaselineCandidate {
+    alpha_mae: f64,
+    soft_iou: f64,
+    agreement_alpha_only: f64,
+    score_status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct Aggregate {
+    by_candidate: BTreeMap<String, AggregateCandidate>,
+    by_split: BTreeMap<String, BTreeMap<String, AggregateCandidate>>,
+}
+#[derive(Debug, Serialize)]
+struct AggregateCandidate {
+    image_count: usize,
+    mean_alpha_mae: f64,
+    mean_soft_iou: f64,
+    mean_agreement_alpha_only: f64,
+}
+
+#[derive(Debug)]
+struct ImageInfo {
+    width: u32,
+    height: u32,
+    orientation: String,
+    alpha_present: bool,
+    png_bit_depth: Option<u8>,
+    png_color_type: Option<u8>,
+    png_color_metadata: String,
+    alpha_levels: u16,
+    rgba: image::RgbaImage,
+}
+
+#[derive(Debug)]
+struct LoadedRecord {
+    record: ManifestRecord,
+    _input: ImageInfo,
+    reference: ImageInfo,
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Validate { manifest } => {
+            let summary = validate_manifest(&manifest)?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+            if !summary.valid {
+                bail!(
+                    "M0 validation failed with {} error(s)",
+                    summary.errors.len()
+                );
+            }
+        }
+        Command::Baseline { manifest, output } => {
+            let records = load_validated(&manifest)?;
+            write_baseline(&manifest, &output, &records)?;
+            println!("wrote {}", output.display());
+        }
+        Command::Check { manifest, output } => {
+            let summary = validate_manifest(&manifest)?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+            if !summary.valid {
+                bail!(
+                    "M0 validation failed with {} error(s)",
+                    summary.errors.len()
+                );
+            }
+            let records = load_validated(&manifest)?;
+            write_baseline(&manifest, &output, &records)?;
+            println!("wrote {}", output.display());
+        }
+    }
+    Ok(())
+}
+
+fn read_manifest(path: &Path) -> Result<Vec<ManifestRecord>> {
+    let file = File::open(path).with_context(|| format!("open manifest {}", path.display()))?;
+    let mut records = Vec::new();
+    for (line_no, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| format!("read manifest line {}", line_no + 1))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        records.push(
+            serde_json::from_str(&line)
+                .with_context(|| format!("parse manifest JSONL record on line {}", line_no + 1))?,
+        );
+    }
+    Ok(records)
+}
+
+fn validate_manifest(path: &Path) -> Result<ValidationSummary> {
+    let records = read_manifest(path)?;
+    let root = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut errors = Vec::new();
+    let mut ids = BTreeSet::new();
+    let mut splits = BTreeMap::<String, usize>::new();
+    let mut input_hashes = HashMap::<String, String>::new();
+    let mut reference_hashes = HashMap::<String, String>::new();
+    let mut input_decoded_hashes = HashMap::<String, String>::new();
+    let mut reference_decoded_hashes = HashMap::<String, String>::new();
+    let mut paths = HashMap::<String, String>::new();
+    let mut observed_tags = BTreeSet::new();
+    for record in &records {
+        if !ids.insert(record.id.clone()) {
+            errors.push(format!("duplicate id {}", record.id));
+        }
+        *splits.entry(record.split.as_str().to_owned()).or_default() += 1;
+        observed_tags.extend(record.tags.iter().cloned());
+        validate_record(root, record, &mut errors);
+        for (kind, raw_path) in [("input", &record.input), ("reference", &record.reference)] {
+            if let Ok(path) = checked_path(root, raw_path) {
+                let key = path.display().to_string();
+                if let Some(previous) = paths.insert(key, format!("{}:{kind}", record.id)) {
+                    errors.push(format!(
+                        "path is reused by {previous} and {}:{kind}; possible leakage",
+                        record.id
+                    ));
+                }
+            }
+        }
+        check_hash_collision(
+            &mut input_hashes,
+            &record.input_sha256,
+            &record.id,
+            "input",
+            &mut errors,
+        );
+        check_hash_collision(
+            &mut reference_hashes,
+            &record.reference_sha256,
+            &record.id,
+            "reference",
+            &mut errors,
+        );
+        check_hash_collision(
+            &mut input_decoded_hashes,
+            &record.input_decoded_sha256,
+            &record.id,
+            "input decoded",
+            &mut errors,
+        );
+        check_hash_collision(
+            &mut reference_decoded_hashes,
+            &record.reference_decoded_sha256,
+            &record.id,
+            "reference decoded",
+            &mut errors,
+        );
+    }
+    for required in ["tune", "validation", "blind"] {
+        if !splits.contains_key(required) {
+            errors.push(format!("required split {required} has no records"));
+        }
+    }
+    if records.is_empty() {
+        errors.push("manifest has no records".to_owned());
+    }
+    validate_duplicate_group_splits(&records, &mut errors);
+    if let Some(arena_path) = root
+        .parent()
+        .map(|parent| parent.join("test_images/arena.jsonl"))
+    {
+        if arena_path.is_file() {
+            validate_arena_consistency(root, &arena_path, &records, &mut errors);
+        }
+    }
+    let coverage = coverage_report(&observed_tags);
+    let valid = errors.is_empty();
+    Ok(ValidationSummary {
+        schema_version: SCHEMA_VERSION,
+        manifest: path.display().to_string(),
+        records: records.len(),
+        split_counts: splits,
+        coverage,
+        blind_excluded_from_tuning: true,
+        valid,
+        errors,
+    })
+}
+
+fn validate_duplicate_group_splits(records: &[ManifestRecord], errors: &mut Vec<String>) {
+    let mut groups = HashMap::<&str, Split>::new();
+    for record in records {
+        if let Some(previous) = groups.insert(&record.duplicate_group, record.split) {
+            if previous != record.split {
+                errors.push(format!(
+                    "duplicate_group {} crosses split boundaries",
+                    record.duplicate_group
+                ));
+            }
+        }
+    }
+}
+
+fn validate_record(root: &Path, record: &ManifestRecord, errors: &mut Vec<String>) {
+    validate_record_invariants(record, errors);
+    let input_path = match checked_path(root, &record.input) {
+        Ok(path) => path,
+        Err(error) => {
+            errors.push(format!("{} input path: {error:#}", record.id));
+            return;
+        }
+    };
+    let reference_path = match checked_path(root, &record.reference) {
+        Ok(path) => path,
+        Err(error) => {
+            errors.push(format!("{} reference path: {error:#}", record.id));
+            return;
+        }
+    };
+    let input = match inspect_image(&input_path) {
+        Ok(info) => Some(info),
+        Err(error) => {
+            errors.push(format!("{} input: {error:#}", record.id));
+            None
+        }
+    };
+    let reference = match inspect_image(&reference_path) {
+        Ok(info) => Some(info),
+        Err(error) => {
+            errors.push(format!("{} reference: {error:#}", record.id));
+            None
+        }
+    };
+    if let (Some(input_info), Some(reference_info)) = (input.as_ref(), reference.as_ref()) {
+        validate_pair_dimensions(record, input_info, reference_info, errors);
+    }
+    if let Some(info) = input.as_ref() {
+        compare_info(
+            record,
+            "input",
+            info,
+            record.input_width,
+            record.input_height,
+            record.input_alpha_present,
+            &record.input_decoded_sha256,
+            errors,
+        );
+        if !hash_file(&input_path).is_ok_and(|hash| hash == record.input_sha256) {
+            errors.push(format!("{} input file SHA-256 mismatch", record.id));
+        }
+        if !record
+            .input_orientation
+            .eq_ignore_ascii_case(&info.orientation)
+        {
+            errors.push(format!("{} input orientation mismatch", record.id));
+        }
+    }
+    if let Some(info) = reference.as_ref() {
+        compare_info(
+            record,
+            "reference",
+            info,
+            record.reference_width,
+            record.reference_height,
+            record.reference_alpha_present,
+            &record.reference_decoded_sha256,
+            errors,
+        );
+        if !hash_file(&reference_path).is_ok_and(|hash| hash == record.reference_sha256) {
+            errors.push(format!("{} reference file SHA-256 mismatch", record.id));
+        }
+        if !record
+            .reference_orientation
+            .eq_ignore_ascii_case(&info.orientation)
+        {
+            errors.push(format!("{} reference orientation mismatch", record.id));
+        }
+        if info.width != record.width || info.height != record.height {
+            errors.push(format!(
+                "{} canonical dimensions do not match width/height",
+                record.id
+            ));
+        }
+        if !info.alpha_present {
+            errors.push(format!(
+                "{} PhotoRoom reference has no alpha channel",
+                record.id
+            ));
+        }
+        if info.png_bit_depth != Some(8) || info.png_color_type != Some(6) {
+            errors.push(format!("{} PhotoRoom reference must be 8-bit RGBA PNG (got bit depth {:?}, color type {:?})", record.id, info.png_bit_depth, info.png_color_type));
+        }
+        if info.png_color_metadata == "unsupported" {
+            errors.push(format!(
+                "{} PhotoRoom reference has unsupported colour metadata",
+                record.id
+            ));
+        }
+        if record.reference_png_bit_depth != info.png_bit_depth {
+            errors.push(format!(
+                "{} reference_png_bit_depth metadata mismatch",
+                record.id
+            ));
+        }
+        if record.reference_png_color_type != info.png_color_type {
+            errors.push(format!(
+                "{} reference_png_color_type metadata mismatch",
+                record.id
+            ));
+        }
+        if record.reference_png_color_metadata != info.png_color_metadata {
+            errors.push(format!(
+                "{} reference_png_color_metadata mismatch",
+                record.id
+            ));
+        }
+        if info.alpha_levels != record.reference_alpha_levels {
+            errors.push(format!(
+                "{} reference_alpha_levels metadata mismatch",
+                record.id
+            ));
+        }
+        if info.alpha_levels != 256 {
+            errors.push(format!(
+                "{} PhotoRoom target must expose all 256 8-bit alpha levels (got {})",
+                record.id, info.alpha_levels
+            ));
+        }
+    }
+    if record.tags.is_empty() {
+        errors.push(format!("{} has no taxonomy tags", record.id));
+    }
+    if record.prompt.is_some() {
+        errors.push(format!(
+            "{} prompt must be null for automatic arena records",
+            record.id
+        ));
+    }
+    if record.subject_policy != SubjectPolicy::PrimarySubject {
+        errors.push(format!("{} has an unsupported subject policy", record.id));
+    }
+    if record.shadow_policy != ShadowPolicy::PreserveTargetEffects {
+        errors.push(format!("{} has an unsupported shadow policy", record.id));
+    }
+}
+
+fn validate_record_invariants(record: &ManifestRecord, errors: &mut Vec<String>) {
+    if record.schema_version != SCHEMA_VERSION {
+        errors.push(format!(
+            "{} schema_version must be {SCHEMA_VERSION}",
+            record.id
+        ));
+    }
+    if record.id.trim().is_empty() {
+        errors.push("record id must not be empty or whitespace".to_owned());
+    }
+    if record.duplicate_group.trim().is_empty() {
+        errors.push(format!(
+            "{} duplicate_group must not be empty or whitespace",
+            record.id
+        ));
+    }
+    if record.tags.is_empty() {
+        errors.push(format!("{} has no taxonomy tags", record.id));
+    }
+    let mut tags = BTreeSet::new();
+    for tag in &record.tags {
+        if tag.trim().is_empty() {
+            errors.push(format!("{} has an empty taxonomy tag", record.id));
+        }
+        if !tags.insert(tag) {
+            errors.push(format!("{} has duplicate taxonomy tag {tag:?}", record.id));
+        }
+    }
+    for (name, hash) in [
+        ("input_sha256", &record.input_sha256),
+        ("reference_sha256", &record.reference_sha256),
+        ("input_decoded_sha256", &record.input_decoded_sha256),
+        ("reference_decoded_sha256", &record.reference_decoded_sha256),
+    ] {
+        if !is_sha256_hex(hash) {
+            errors.push(format!(
+                "{} {name} must be exactly 64 lowercase hexadecimal characters",
+                record.id
+            ));
+        }
+    }
+    for (name, value) in [
+        ("width", record.width),
+        ("height", record.height),
+        ("input_width", record.input_width),
+        ("input_height", record.input_height),
+        ("reference_width", record.reference_width),
+        ("reference_height", record.reference_height),
+    ] {
+        if value == 0 {
+            errors.push(format!("{} {name} must be positive", record.id));
+        }
+    }
+    if let Some(date) = &record.reference_created_at {
+        if !is_iso_date_shape(date) {
+            errors.push(format!(
+                "{} reference_created_at is not a valid ISO-8601 date/time shape",
+                record.id
+            ));
+        }
+    }
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_iso_date_shape(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 10
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !bytes[..4]
+            .iter()
+            .chain(&bytes[5..7])
+            .chain(&bytes[8..10])
+            .all(u8::is_ascii_digit)
+    {
+        return false;
+    }
+    let month = value[5..7].parse::<u8>().unwrap_or(0);
+    let day = value[8..10].parse::<u8>().unwrap_or(0);
+    if month == 0 || month > 12 || day == 0 || day > 31 {
+        return false;
+    }
+    bytes.len() == 10 || (bytes[10] == b'T' && bytes.len() > 11)
+}
+
+fn validate_pair_dimensions(
+    record: &ManifestRecord,
+    input: &ImageInfo,
+    reference: &ImageInfo,
+    errors: &mut Vec<String>,
+) {
+    if input.width != reference.width || input.height != reference.height {
+        errors.push(format!(
+            "{} input/reference canonical dimensions differ ({}x{} vs {}x{})",
+            record.id, input.width, input.height, reference.width, reference.height
+        ));
+    }
+    if input.width != record.width || input.height != record.height {
+        errors.push(format!(
+            "{} input canonical dimensions do not match manifest width/height",
+            record.id
+        ));
+    }
+    if reference.width != record.width || reference.height != record.height {
+        errors.push(format!(
+            "{} reference canonical dimensions do not match manifest width/height",
+            record.id
+        ));
+    }
+}
+
+fn read_arena(path: &Path) -> Result<Vec<ArenaRecord>> {
+    let file = File::open(path).with_context(|| format!("open arena {}", path.display()))?;
+    let mut records = Vec::new();
+    for (line_no, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| format!("read arena line {}", line_no + 1))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        records.push(
+            serde_json::from_str(&line)
+                .with_context(|| format!("parse arena JSONL record on line {}", line_no + 1))?,
+        );
+    }
+    Ok(records)
+}
+
+fn validate_arena_consistency(
+    root: &Path,
+    arena_path: &Path,
+    manifest: &[ManifestRecord],
+    errors: &mut Vec<String>,
+) {
+    let arena = match read_arena(arena_path) {
+        Ok(records) => records,
+        Err(error) => {
+            errors.push(format!("arena: {error:#}"));
+            return;
+        }
+    };
+    if arena.len() != manifest.len() {
+        errors.push(format!(
+            "arena/manifest record count differs ({} vs {})",
+            arena.len(),
+            manifest.len()
+        ));
+    }
+    let manifest_by_id: HashMap<&str, &ManifestRecord> = manifest
+        .iter()
+        .map(|record| (record.id.as_str(), record))
+        .collect();
+    let arena_root = arena_path.parent().unwrap_or_else(|| Path::new("."));
+    for item in &arena {
+        let Some(record) = manifest_by_id.get(item.id.as_str()) else {
+            errors.push(format!("arena id {} is missing from manifest", item.id));
+            continue;
+        };
+        if let (Ok(arena_input), Ok(manifest_input), Ok(arena_target), Ok(manifest_target)) = (
+            canonical_under(arena_root, &item.input),
+            checked_path(root, &record.input),
+            canonical_under(arena_root, &item.target),
+            checked_path(root, &record.reference),
+        ) {
+            if arena_input != manifest_input {
+                errors.push(format!(
+                    "arena {} input path differs from manifest",
+                    item.id
+                ));
+            }
+            if arena_target != manifest_target {
+                errors.push(format!(
+                    "arena {} target path differs from manifest",
+                    item.id
+                ));
+            }
+        } else {
+            errors.push(format!(
+                "arena {} contains an invalid input/target path",
+                item.id
+            ));
+        }
+        if item.split != record.split {
+            errors.push(format!("arena {} split differs from manifest", item.id));
+        }
+        if item.duplicate_group != record.duplicate_group {
+            errors.push(format!(
+                "arena {} duplicate_group differs from manifest",
+                item.id
+            ));
+        }
+        if item.challenge.trim().is_empty() {
+            errors.push(format!("arena {} challenge is empty", item.id));
+        }
+        let target_path = match checked_path(root, &record.reference) {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
+        let target = match inspect_image(&target_path) {
+            Ok(info) => info,
+            Err(error) => {
+                errors.push(format!("arena {} target: {error:#}", item.id));
+                continue;
+            }
+        };
+        if target.width != record.width || target.height != record.height {
+            errors.push(format!("arena {} dimensions differ from manifest", item.id));
+        }
+        let fractional = target
+            .rgba
+            .pixels()
+            .filter(|pixel| pixel[3] > 0 && pixel[3] < 255)
+            .count() as f64
+            / f64::from(target.width * target.height);
+        if (fractional - item.fractional_alpha_reported).abs() > 0.000002 {
+            errors.push(format!(
+                "arena {} fractional-alpha ratio differs (declared {}, measured {})",
+                item.id, item.fractional_alpha_reported, fractional
+            ));
+        }
+    }
+    let arena_ids: BTreeSet<&str> = arena.iter().map(|item| item.id.as_str()).collect();
+    for record in manifest {
+        if !arena_ids.contains(record.id.as_str()) {
+            errors.push(format!("manifest id {} is missing from arena", record.id));
+        }
+    }
+}
+
+fn canonical_under(root: &Path, raw: &str) -> Result<PathBuf> {
+    if raw.trim().is_empty() || Path::new(raw).is_absolute() {
+        bail!("arena path must be relative and non-empty");
+    }
+    let path = fs::canonicalize(root.join(raw))?;
+    let workspace = fs::canonicalize(root)?
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow!("arena root has no parent"))?;
+    if !path.starts_with(&workspace) || !path.is_file() {
+        bail!("invalid arena path {raw}");
+    }
+    Ok(path)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compare_info(
+    record: &ManifestRecord,
+    kind: &str,
+    info: &ImageInfo,
+    width: u32,
+    height: u32,
+    alpha: bool,
+    decoded_hash: &str,
+    errors: &mut Vec<String>,
+) {
+    if info.width != width || info.height != height {
+        errors.push(format!("{} {kind} dimensions mismatch", record.id));
+    }
+    if info.alpha_present != alpha {
+        errors.push(format!("{} {kind} alpha presence mismatch", record.id));
+    }
+    if sha256_hex(info.rgba.as_raw()) != decoded_hash {
+        errors.push(format!(
+            "{} {kind} decoded canonical pixel SHA-256 mismatch",
+            record.id
+        ));
+    }
+}
+
+fn check_hash_collision(
+    map: &mut HashMap<String, String>,
+    hash: &str,
+    id: &str,
+    kind: &str,
+    errors: &mut Vec<String>,
+) {
+    if let Some(previous) = map.insert(hash.to_owned(), id.to_owned()) {
+        if previous != id {
+            errors.push(format!(
+                "{kind} hash is shared by {previous} and {id}; possible leakage"
+            ));
+        }
+    }
+}
+
+fn load_validated(manifest: &Path) -> Result<Vec<LoadedRecord>> {
+    let summary = validate_manifest(manifest)?;
+    if !summary.valid {
+        bail!(
+            "cannot continue: M0 manifest validation failed: {}",
+            summary.errors.join("; ")
+        );
+    }
+    let records = read_manifest(manifest)?;
+    let root = manifest.parent().unwrap_or_else(|| Path::new("."));
+    records
+        .into_iter()
+        .map(|record| {
+            let input = inspect_image(&checked_path(root, &record.input)?)?;
+            let reference = inspect_image(&checked_path(root, &record.reference)?)?;
+            Ok(LoadedRecord {
+                record,
+                _input: input,
+                reference,
+            })
+        })
+        .collect()
+}
+
+fn inspect_image(path: &Path) -> Result<ImageInfo> {
+    let mut reader = ImageReader::open(path).with_context(|| format!("open {}", path.display()))?;
+    reader = reader
+        .with_guessed_format()
+        .with_context(|| format!("guess format for {}", path.display()))?;
+    let mut decoder = reader
+        .into_decoder()
+        .with_context(|| format!("decode header {}", path.display()))?;
+    let (raw_width, raw_height) = decoder.dimensions();
+    let orientation = decoder
+        .orientation()
+        .with_context(|| format!("read orientation {}", path.display()))?;
+    let orientation_name = format!("{orientation:?}");
+    let raw_color = decoder.original_color_type();
+    drop(decoder);
+    let mut reader =
+        ImageReader::open(path).with_context(|| format!("reopen {}", path.display()))?;
+    reader = reader
+        .with_guessed_format()
+        .with_context(|| format!("guess format for {}", path.display()))?;
+    let mut image = reader
+        .decode()
+        .with_context(|| format!("decode {}", path.display()))?;
+    image.apply_orientation(orientation);
+    let (width, height) = image.dimensions();
+    let alpha_present = has_alpha(raw_color);
+    let rgba = image.to_rgba8();
+    let mut levels = [false; 256];
+    for pixel in rgba.pixels() {
+        levels[usize::from(pixel[3])] = true;
+    }
+    let alpha_levels = levels.into_iter().filter(|present| *present).count() as u16;
+    let (png_bit_depth, png_color_type, png_color_metadata) = if path
+        .extension()
+        .is_some_and(|x| x.eq_ignore_ascii_case("png"))
+    {
+        parse_png_metadata(&fs::read(path)?)?
+    } else {
+        (None, None, "not-png".to_owned())
+    };
+    if raw_width == 0 || raw_height == 0 || width == 0 || height == 0 {
+        bail!("{} has zero dimensions", path.display());
+    }
+    Ok(ImageInfo {
+        width,
+        height,
+        orientation: orientation_name,
+        alpha_present,
+        png_bit_depth,
+        png_color_type,
+        png_color_metadata,
+        alpha_levels,
+        rgba,
+    })
+}
+
+fn checked_path(root: &Path, raw: &str) -> Result<PathBuf> {
+    let relative = Path::new(raw);
+    if raw.trim().is_empty() {
+        bail!("path is empty");
+    }
+    if relative.is_absolute() {
+        bail!("absolute paths are not allowed");
+    }
+    let path = fs::canonicalize(root.join(relative)).with_context(|| format!("resolve {raw}"))?;
+    let workspace = fs::canonicalize(root)?
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow!("manifest root has no parent"))?;
+    if !path.starts_with(&workspace) {
+        bail!("path escapes the workspace: {raw}");
+    }
+    if !path.is_file() {
+        bail!("path is not a regular file: {raw}");
+    }
+    Ok(path)
+}
+
+fn has_alpha(color: image::ExtendedColorType) -> bool {
+    matches!(
+        color,
+        image::ExtendedColorType::La8
+            | image::ExtendedColorType::La16
+            | image::ExtendedColorType::Rgba8
+            | image::ExtendedColorType::Rgba16
+            | image::ExtendedColorType::Rgba32F
+    )
+}
+
+fn parse_png_metadata(bytes: &[u8]) -> Result<(Option<u8>, Option<u8>, String)> {
+    const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if !bytes.starts_with(SIGNATURE) {
+        bail!("invalid PNG signature");
+    }
+    let mut offset = 8usize;
+    let mut bit_depth = None;
+    let mut color_type = None;
+    let mut srgb = false;
+    let mut icc = false;
+    let mut gamma = false;
+    while offset + 12 <= bytes.len() {
+        let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into()?) as usize;
+        let end = offset
+            .checked_add(12)
+            .and_then(|x| x.checked_add(length))
+            .ok_or_else(|| anyhow!("PNG chunk overflow"))?;
+        if end > bytes.len() {
+            bail!("truncated PNG chunk");
+        }
+        let kind = &bytes[offset + 4..offset + 8];
+        let data = &bytes[offset + 8..offset + 8 + length];
+        if kind == b"IHDR" && data.len() >= 13 {
+            bit_depth = Some(data[8]);
+            color_type = Some(data[9]);
+        } else if kind == b"sRGB" {
+            srgb = true;
+        } else if kind == b"iCCP" {
+            icc = true;
+        } else if kind == b"gAMA" {
+            gamma = true;
+        }
+        offset = end;
+        if kind == b"IEND" {
+            break;
+        }
+    }
+    let colour = if srgb {
+        "sRGB"
+    } else if icc {
+        "ICC"
+    } else if gamma {
+        "gamma-tagged (sRGB-compatible input convention)"
+    } else {
+        "unprofiled (PNG sRGB default)"
+    };
+    Ok((bit_depth, color_type, colour.to_owned()))
+}
+
+fn hash_file(path: &Path) -> Result<String> {
+    Ok(sha256_hex(
+        &fs::read(path).with_context(|| format!("read {}", path.display()))?,
+    ))
+}
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn coverage_report(tags: &BTreeSet<String>) -> Coverage {
+    const TAXONOMY: &[&str] = &[
+        "portrait",
+        "hair",
+        "fur",
+        "rigid-product",
+        "food",
+        "vehicle",
+        "foliage",
+        "holes",
+        "thin-structures",
+        "low-contrast",
+        "reflections",
+        "translucency",
+        "glass",
+        "shadows",
+        "multiple-subjects",
+        "edge-touching",
+        "small-subject",
+        "very-high-resolution",
+        "very-low-resolution",
+    ];
+    let missing_taxonomy_tags = TAXONOMY
+        .iter()
+        .filter(|tag| !tags.contains(**tag))
+        .map(|tag| (*tag).to_owned())
+        .collect();
+    Coverage { observed_tags: tags.iter().cloned().collect(), missing_taxonomy_tags, limitation: "The six supplied arena pairs are frozen for source-faithful comparison, but are not statistically adequate coverage of the broader taxonomy. Missing categories remain declared limitations, not malformed-corpus failures.".to_owned() }
+}
+
+fn write_baseline(manifest: &Path, output: &Path, records: &[LoadedRecord]) -> Result<()> {
+    let mut images = Vec::with_capacity(records.len());
+    for loaded in records {
+        let reference = &loaded.reference.rgba;
+        let alpha: Vec<f64> = reference
+            .pixels()
+            .map(|p| f64::from(p[3]) / 255.0)
+            .collect();
+        let fractional =
+            alpha.iter().filter(|a| **a > 0.0 && **a < 1.0).count() as f64 / alpha.len() as f64;
+        images.push(BaselineImage {
+            id: loaded.record.id.clone(),
+            split: loaded.record.split,
+            width: loaded.reference.width,
+            height: loaded.reference.height,
+            reference_fractional_alpha: fractional,
+            zero: candidate_metrics(&alpha, 0.0),
+            one: candidate_metrics(&alpha, 1.0),
+        });
+    }
+    images.sort_by(|a, b| a.id.cmp(&b.id));
+    let aggregate = aggregate_metrics(&images);
+    let tags: BTreeSet<_> = records
+        .iter()
+        .flat_map(|r| r.record.tags.iter().cloned())
+        .collect();
+    let report = BaselineReport {
+        report_version: BASELINE_REPORT_VERSION, schema_version: SCHEMA_VERSION, manifest: manifest.display().to_string(),
+        metric_definition: MetricDefinition {
+            alpha_mae: "mean(abs(candidate_alpha - reference_alpha)) over canonical pixels".to_owned(),
+            soft_iou: "sum(min(candidate_alpha, reference_alpha)) / sum(max(candidate_alpha, reference_alpha)); 1.0 when both sums are zero".to_owned(),
+            alpha_levels: "Reference alpha is decoded as 8-bit RGBA and normalized to [0,1].".to_owned(),
+            comparison: "M0 baseline is alpha-only and intentionally does not claim the Section 6 composite agreement score; full candidates begin in later milestones.".to_owned(),
+        },
+        tuning_policy: TuningPolicy {
+            blind_is_evaluation_only: true, sweep_inputs: vec!["tune".to_owned(), "validation".to_owned()],
+            statement: "All-zero and all-one controls are fixed reports, not tunable models. No sweep, threshold, or configuration decision may read blind records.".to_owned(),
+        },
+        images,
+        aggregate,
+        coverage: coverage_report(&tags),
+        gate: GateStatus {
+            status: "pass",
+            every_item_valid: true,
+            blind_not_used_by_sweeps: true,
+            coverage_limitations_declared: true,
+        },
+    };
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = File::create(output).with_context(|| format!("create {}", output.display()))?;
+    serde_json::to_writer_pretty(&mut file, &report)?;
+    file.write_all(b"\n")?;
+    Ok(())
+}
+
+fn candidate_metrics(reference: &[f64], value: f64) -> BaselineCandidate {
+    let mae = reference
+        .iter()
+        .map(|alpha| (value - alpha).abs())
+        .sum::<f64>()
+        / reference.len() as f64;
+    let intersection = reference.iter().map(|alpha| value.min(*alpha)).sum::<f64>();
+    let union = reference.iter().map(|alpha| value.max(*alpha)).sum::<f64>();
+    let soft_iou = if union == 0.0 {
+        1.0
+    } else {
+        intersection / union
+    };
+    BaselineCandidate {
+        alpha_mae: mae,
+        soft_iou,
+        agreement_alpha_only: 1.0 - mae,
+        score_status: "control-only",
+    }
+}
+
+fn aggregate_metrics(images: &[BaselineImage]) -> Aggregate {
+    let mut by_split = BTreeMap::new();
+    for split in [Split::Tune, Split::Validation, Split::Blind] {
+        let subset: Vec<_> = images.iter().filter(|image| image.split == split).collect();
+        let mut candidates = BTreeMap::new();
+        candidates.insert(
+            "all-zero".to_owned(),
+            average_candidate(subset.iter().map(|image| &image.zero).collect()),
+        );
+        candidates.insert(
+            "all-one".to_owned(),
+            average_candidate(subset.iter().map(|image| &image.one).collect()),
+        );
+        by_split.insert(split.as_str().to_owned(), candidates);
+    }
+    let mut by_candidate = BTreeMap::new();
+    by_candidate.insert(
+        "all-zero".to_owned(),
+        average_candidate(images.iter().map(|image| &image.zero).collect()),
+    );
+    by_candidate.insert(
+        "all-one".to_owned(),
+        average_candidate(images.iter().map(|image| &image.one).collect()),
+    );
+    Aggregate {
+        by_candidate,
+        by_split,
+    }
+}
+
+fn average_candidate(candidates: Vec<&BaselineCandidate>) -> AggregateCandidate {
+    let count = candidates.len();
+    if count == 0 {
+        return AggregateCandidate {
+            image_count: 0,
+            mean_alpha_mae: 0.0,
+            mean_soft_iou: 0.0,
+            mean_agreement_alpha_only: 0.0,
+        };
+    }
+    AggregateCandidate {
+        image_count: count,
+        mean_alpha_mae: candidates
+            .iter()
+            .map(|candidate| candidate.alpha_mae)
+            .sum::<f64>()
+            / count as f64,
+        mean_soft_iou: candidates
+            .iter()
+            .map(|candidate| candidate.soft_iou)
+            .sum::<f64>()
+            / count as f64,
+        mean_agreement_alpha_only: candidates
+            .iter()
+            .map(|candidate| candidate.agreement_alpha_only)
+            .sum::<f64>()
+            / count as f64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Deserialize)]
+    struct BaselineFixture {
+        reference_alpha: Vec<f64>,
+        all_zero_alpha_mae: f64,
+        all_one_alpha_mae: f64,
+    }
+
+    #[test]
+    fn png_metadata_rejects_bad_signature() {
+        assert!(parse_png_metadata(b"not-png").is_err());
+    }
+
+    #[test]
+    fn constant_baselines_are_deterministic_and_bounded() {
+        let fixture: BaselineFixture =
+            serde_json::from_str(include_str!("../tests/fixtures/alpha-baseline.json")).unwrap();
+        let zero = candidate_metrics(&fixture.reference_alpha, 0.0);
+        let one = candidate_metrics(&fixture.reference_alpha, 1.0);
+        assert!((zero.alpha_mae - fixture.all_zero_alpha_mae).abs() < f64::EPSILON);
+        assert!((one.alpha_mae - fixture.all_one_alpha_mae).abs() < f64::EPSILON);
+        assert!((0.0..=1.0).contains(&zero.soft_iou));
+        assert!((0.0..=1.0).contains(&one.soft_iou));
+    }
+
+    #[test]
+    fn duplicate_group_split_is_checked_by_validator() {
+        let first = test_record("one", Split::Tune, "same");
+        let second = test_record("two", Split::Blind, "same");
+        let mut errors = Vec::new();
+        validate_duplicate_group_splits(&[first, second], &mut errors);
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("crosses split boundaries")));
+    }
+
+    #[test]
+    fn record_invariants_reject_bad_hash_schema_and_empty_tags() {
+        let mut record = test_record(" ", Split::Tune, "group");
+        record.schema_version = "wrong".to_owned();
+        record.input_sha256 = "not-a-hash".to_owned();
+        record.tags = vec![String::new(), "x".to_owned(), "x".to_owned()];
+        let mut errors = Vec::new();
+        validate_record_invariants(&record, &mut errors);
+        assert!(errors.iter().any(|error| error.contains("schema_version")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("64 lowercase hexadecimal")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("empty taxonomy tag")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("duplicate taxonomy tag")));
+    }
+
+    #[test]
+    fn serde_rejects_unknown_manifest_fields() {
+        let mut value = serde_json::to_value(test_record("one", Split::Tune, "group")).unwrap();
+        value["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<ManifestRecord>(value).is_err());
+    }
+
+    #[test]
+    fn pair_dimension_invariant_rejects_mismatch() {
+        let record = test_record("one", Split::Tune, "group");
+        let input = test_info(10, 20);
+        let reference = test_info(11, 20);
+        let mut errors = Vec::new();
+        validate_pair_dimensions(&record, &input, &reference, &mut errors);
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("dimensions differ")));
+    }
+
+    fn test_record(id: &str, split: Split, duplicate_group: &str) -> ManifestRecord {
+        ManifestRecord {
+            schema_version: SCHEMA_VERSION.to_owned(),
+            id: id.to_owned(),
+            input: "input.png".to_owned(),
+            reference: "reference.png".to_owned(),
+            input_sha256: "a".repeat(64),
+            reference_sha256: "b".repeat(64),
+            input_decoded_sha256: "c".repeat(64),
+            reference_decoded_sha256: "d".repeat(64),
+            width: 10,
+            height: 20,
+            input_width: 10,
+            input_height: 20,
+            reference_width: 10,
+            reference_height: 20,
+            input_orientation: "NoTransforms".to_owned(),
+            reference_orientation: "NoTransforms".to_owned(),
+            input_alpha_present: false,
+            reference_alpha_present: true,
+            reference_png_bit_depth: Some(8),
+            reference_png_color_type: Some(6),
+            reference_png_color_metadata: "sRGB".to_owned(),
+            reference_alpha_levels: 256,
+            tags: vec!["portrait".to_owned()],
+            split,
+            subject_policy: SubjectPolicy::PrimarySubject,
+            shadow_policy: ShadowPolicy::PreserveTargetEffects,
+            prompt: None,
+            reference_created_at: None,
+            reference_tool: None,
+            reference_tool_version: None,
+            duplicate_group: duplicate_group.to_owned(),
+            notes: None,
+        }
+    }
+
+    fn test_info(width: u32, height: u32) -> ImageInfo {
+        ImageInfo {
+            width,
+            height,
+            orientation: "NoTransforms".to_owned(),
+            alpha_present: true,
+            png_bit_depth: Some(8),
+            png_color_type: Some(6),
+            png_color_metadata: "sRGB".to_owned(),
+            alpha_levels: 256,
+            rgba: image::RgbaImage::new(width, height),
+        }
+    }
+}

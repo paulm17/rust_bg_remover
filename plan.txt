@@ -1,0 +1,776 @@
+# Rust Background Removal: Mechanism Audit and Implementation Roadmap
+
+## 1. Objective
+
+Build a local, modular Rust background-removal system whose output can be measured against pinned PhotoRoom reference cutouts. The system will implement all materially different mechanisms found in `projects/`, benchmark them in isolation and in compatible combinations, select a champion pipeline, and then tune or extend that pipeline without contaminating a blind holdout set.
+
+The target is not a source-compatible clone of PhotoRoom. PhotoRoom's models, training data, subject-selection rules, and post-processing are proprietary. "99% PhotoRoom parity" therefore needs to mean a declared score on a frozen local corpus, with separate gates for subject selection, alpha accuracy, boundary quality, and foreground colour. Exact equality on a small tuning set is not evidence of general product parity.
+
+The intended result is independently implemented Rust code, using public model weights. It may combine public ideas into a new pipeline.
+
+## 2. What is actually in `projects/`
+
+The folders do not represent six independent algorithms. They contain several front ends around a smaller set of reusable stages. Counting model files, precision variants, or language ports as separate mechanisms would produce a misleading benchmark.
+
+### 2.1 Repository audit
+
+| Folder | Unique contribution | Treatment in the Rust build |
+|---|---|---|
+| `python/backgroundremover` | PyTorch U2-Net, U2-Net-P, human-specific U2-Net; hard mask threshold; closed-form alpha matting and multilevel foreground estimation; image/video batching | Port the image mechanisms. Keep video batching as a later delivery feature, not a quality candidate. |
+| `python/rembg` | ONNX model registry for U2-Net, IS-Net/DIS, BiRefNet, BRIA RMBG, SAM, custom BEN/DIS/U2-Net and a remote withoutBG adapter; naive alpha, morphology, closed-form matting, ViTMatte and foreground decontamination | Use as the main behavioural reference for model-specific tensor contracts and post-processing. |
+| `python/image-background-remove-tool` | CarveKit pipeline: U2-Net, BASNet, DeepLabV3, TRACER-B7, probability-aware trimap construction and FBA Matting | Port the distinct segmenters, trimap algorithm and learned FBA refiner. Preserve FBA's predicted foreground/background, which the wrapper currently discards. |
+| `javascript/background-removal-js` | IMG.LY IS-Net inference at 1024 square, with FP32, FP16 and quantized model encodings; browser/Node execution | Port one IS-Net mechanism. Treat the three encodings as deployment variants of the same algorithm. |
+| `rust/rmbg` | Minimal BRIA RMBG-1.4 ONNX path with Rust resize/tensor/output code | Use as a parity reference, not as the final architecture. Its per-image min/max normalization and unconditional square stretch must remain testable rather than silently inherited. |
+| `rust/rust-background-removal` | Minimal Rust port of the IMG.LY IS-Net pipeline; ONNX Runtime provider setup, CLI/HTTP wrappers | Reuse lessons from its tensor conversion and provider setup. Replace global sessions, unchecked dimensions and output downscaling with typed pipeline components. |
+| `rust/rembg` | Byte-for-byte source duplicate of `python/rembg` in the checked-out trees; only nested `.git` metadata differs | Do not count as an additional Rust implementation or mechanism. |
+
+This audit is based on the checked-out revisions `fa480627` (backgroundremover),
+`030a9ed7` (rembg), `f141a311` (CarveKit), `12f56cc4` (IMG.LY JavaScript),
+`8ce479ca` (Rust rmbg), and `9488f5b0` (Rust background-removal). Re-run the
+audit and parity fixtures before deliberately upgrading any source revision.
+
+### 2.2 Things that are not separate removal mechanisms
+
+- FP32, FP16 and quantized IS-Net are precision/packaging variants.
+- CPU, CUDA, CoreML, OpenVINO and WebGPU are execution providers.
+- CLI, HTTP, browser and video interfaces are delivery layers.
+- `u2net_custom`, `dis_custom` and `ben_custom` are adapter contracts unless a distinct checkpoint and its tensor semantics are supplied.
+- withoutBG is a remote opaque service. It can be a benchmark competitor only; it is not a locally implementable mechanism from the repository.
+- Model checkpoints trained for portraits, anime, clothes, concealed objects, or high-resolution salient objects are domain variants. They belong in the registry, but they do not require duplicate Rust inference engines.
+
+## 3. Mechanisms to isolate
+
+Background removal is a pipeline, not one operation:
+
+1. Decode and canonicalize the source image.
+2. Select the intended subject.
+3. Predict a coarse foreground probability or alpha-like mask.
+4. Restore that mask to original geometry.
+5. Optionally clean mask topology and construct a trimap.
+6. Optionally refine the unknown boundary into a true alpha matte.
+7. Estimate uncontaminated foreground RGB at fractional-alpha pixels.
+8. Encode straight-alpha RGBA and/or composite it onto a requested background.
+
+Each stage must be independently replaceable so an experiment changes one variable at a time.
+
+### 3.1 Segmentation and subject-selection mechanisms
+
+| Family | Repository variants | Reference tensor behaviour | What it contributes |
+|---|---|---|---|
+| U2-Net | `u2net`, `u2netp`, `u2net_human_seg`, `silueta`; `u2net_cloth_seg` is multi-class | Usually 320x320, RGB NCHW, ImageNet normalization, first side output, per-image min/max, resize mask back with Lanczos | Older salient-object baseline; light and domain-specific checkpoints; useful control for alpha refiners. |
+| IS-Net / DIS | general-use, anime; FP32/FP16/quantized IMG.LY encodings | 1024x1024. IMG.LY path uses `(channel-128)/256` and direct output. rembg path uses approximately `channel/max-0.5`, then per-image min/max. | Strong dichotomous segmentation baseline and the cleanest cross-language parity target. The two preprocessing variants must be benchmarked explicitly. |
+| BASNet | general salient-object checkpoint | 320x320, ImageNet normalization, first output, per-image min/max | Predict-refine saliency architecture; distinct from U2-Net even though its wrapper looks similar. |
+| DeepLabV3 | repository's ResNet-101 two-class checkpoint | Aspect-preserving thumbnail up to 1024, ImageNet normalization, `argmax` hard class mask | Semantic hard-mask baseline. Expected to be poor on fractional edges but useful for selection/topology comparison. |
+| TRACER-B7 | universal checkpoint; hair checkpoint is explicitly unavailable in the repository | 640x640, ImageNet normalization, direct soft output, bilinear restoration | CarveKit's recommended general-object coarse segmenter. |
+| BiRefNet | general, general-lite, portrait, DIS, HRSOD, COD, massive | 1024x1024, ImageNet normalization, sigmoid logits, repository then applies per-image min/max | Modern high-detail dichotomous segmentation family. Variants share one engine and differ by weights/domain. |
+| BRIA RMBG | RMBG-1.4 in Rust crate, RMBG-2.0 in rembg | 1024x1024; wrapper versions differ, so exact manifest metadata is mandatory | Modern alpha-like segmentation candidate. Weight licensing is a release gate. |
+| SAM | ViT-B/L/H encoder plus decoder, optional quantization, positive/negative point or box prompts | Prompted encoder/decoder flow; repository default is a centre positive point and unions positive logits | Subject-selection mechanism, not a reliable automatic background remover by itself. Benchmark only when prompts are part of the declared task. |
+| BEN/custom | `ben_custom`, custom DIS and U2-Net adapters | Model supplied by user; preprocessing follows its adapter family | Extensibility test for a declarative model manifest, not a scoreable built-in until weights are pinned. |
+
+Important reproduction rule: preprocessing and post-processing are part of a model. Do not assume that two 1024x1024 ONNX masks are interchangeable. Record colour order, encoded versus linear RGB, range, mean/std, aspect policy, interpolation, layout, input/output names, activation, output index and output normalization in the model manifest.
+
+### 3.2 Mask and trimap mechanisms
+
+Implement these as independent transforms over `AlphaMask<f32>`:
+
+- No cleanup: clamp finite values to `[0,1]` only.
+- Hard threshold: `A > t`, used for deliberately sharp objects and the `backgroundremover` option.
+- rembg morphology: disk-radius-1 opening, Gaussian blur sigma 2, then threshold at 127/255. This is a binary topology cleaner and must not be the default for hair or transparency.
+- Symmetric threshold trimap: definite foreground above `fg_threshold`, definite background below `bg_threshold`, erode both certain regions, mark the rest unknown.
+- CarveKit probability-aware trimap: threshold likely foreground, erode it, dilate by a configurable radius, retain all nonzero probabilities below the certainty threshold as unknown, then erode the final certain foreground.
+- Adaptive trimap, developed only after baselines: choose the unknown band from local alpha gradient, inter-model disagreement and image contrast rather than one global pixel radius.
+
+All morphology radii need both pixel and scale-normalized forms. A fixed 30-pixel dilation behaves very differently on a 300-pixel image and a 6000-pixel image.
+
+### 3.3 Alpha-refinement mechanisms
+
+| Refiner | Inputs | Outputs | Key implementation point |
+|---|---|---|---|
+| None | RGB, coarse alpha | Coarse alpha | Required baseline. |
+| Closed-form alpha matting | RGB plus three-valued trimap | Refined alpha | Port the sparse matting Laplacian solve; use a deterministic sparse solver with convergence/error reporting. |
+| FBA Matting | RGB plus transformed/two-channel trimap | Alpha, foreground RGB, background RGB | Export/pin an ONNX graph. Keep all seven output channels after FBA fusion rather than retaining alpha only as CarveKit does. |
+| ViTMatte | RGB plus trimap concatenated into four channels | Refined alpha | Fixed 1024x1024 in the checked-in implementation; bilinear RGB, nearest trimap, values `[0,1]`, no mean/std. Support the four checkpoint variants through one adapter. |
+
+Closed-form, FBA and ViTMatte solve a different problem from segmentation: they refine an uncertain band but cannot reliably recover a subject that the coarse segmenter excluded entirely.
+
+### 3.4 Foreground-colour mechanisms
+
+An accurate alpha with original photographed RGB is still not a clean cutout. At a soft edge, observed colour is approximately:
+
+`I = A * F + (1 - A) * B`
+
+The following candidates must be separable from alpha prediction:
+
+1. Original RGB (`putalpha`/naive): control candidate; expected to leave halos.
+2. PyMatting-style multilevel foreground estimation: used by rembg and `backgroundremover`, and also part of their closed-form matting path.
+3. PhotoRoom's published approximate fast foreground colour estimation: implement as a pure-Rust coarse-to-fine estimator using separable/integral box blurs. Keep radius, epsilon, iteration count and working colour space in configuration.
+4. FBA-predicted foreground RGB: use the F channels already produced by FBA, with the original image only in certain foreground interiors if tests show that improves texture fidelity.
+
+The initial fast-estimator port should preserve the plan's published arithmetic
+before attempting improvements. For image `I`, alpha `A`, foreground estimate
+`F`, background estimate `B`, radius `r`, blur operator `box()`, and epsilon:
+
+```text
+Ab = box(A, r)
+Fb = box(F * A, r) / (Ab + epsilon)
+Bb = box(B * (1 - A), r) / (1 - Ab + epsilon)
+F  = clamp(Fb + A * (I - A * Fb - (1 - A) * Bb), 0, 1)
+```
+
+Run a coarse pass (initial radius near 90 reference pixels) followed by a fine
+pass (near 6), with the exact boundary and scaling rules locked by upstream
+parity fixtures. Treat those values as sweep seeds, not universal constants.
+
+Never score RGB hidden under alpha zero: those values are semantically irrelevant and make raw RGBA comparisons misleading. Score visible composites and alpha-weighted foreground colour instead.
+
+## 4. Rust architecture
+
+Create a Cargo workspace rather than extending either minimal Rust example:
+
+```text
+crates/
+  bgremove-core/       image, alpha, trimap, geometry and pipeline contracts
+  bgremove-ort/        ONNX Runtime session/provider/tensor adapter
+  bgremove-models/     declarative model registry and family adapters
+  bgremove-matting/    morphology, trimaps, classical/FBA/ViTMatte refiners
+  bgremove-color/      foreground estimators and straight-alpha compositing
+  bgremove-cli/        run, mask, inspect-model and compare commands
+  bgremove-bench/      corpus runner, metrics, sweeps and reports
+models/                manifests only; weights remain external
+corpus/                ignored local inputs/references plus tracked manifests
+tests/fixtures/        small redistributable synthetic/parity fixtures
+```
+
+Start with these contracts (names may change, responsibilities should not):
+
+```rust
+struct RgbImageF32 { width: u32, height: u32, data: Vec<[f32; 3]> }
+struct AlphaMask { width: u32, height: u32, data: Vec<f32> }
+struct Trimap { width: u32, height: u32, data: Vec<TrimapClass> }
+struct Foreground { rgb: RgbImageF32, alpha: AlphaMask }
+
+trait Segmenter {
+    fn predict(&mut self, image: &CanonicalImage, prompt: Option<&Prompt>)
+        -> Result<AlphaMask>;
+}
+
+trait MaskTransform {
+    fn apply(&self, image: &CanonicalImage, alpha: AlphaMask)
+        -> Result<AlphaMask>;
+}
+
+trait AlphaRefiner {
+    fn refine(&mut self, image: &CanonicalImage, coarse: &AlphaMask,
+              trimap: &Trimap) -> Result<RefinedMatte>;
+}
+
+trait ForegroundEstimator {
+    fn estimate(&self, image: &CanonicalImage, matte: &RefinedMatte)
+        -> Result<RgbImageF32>;
+}
+```
+
+`RefinedMatte` may contain alpha only or alpha plus model-provided foreground and background. The pipeline records every stage to an optional artifact sink, which is how the benchmark emits intermediate masks without contaminating production code.
+
+### 4.1 Declarative model manifest
+
+Each checkpoint gets a tracked TOML manifest containing at least:
+
+```toml
+id = "birefnet-general@epoch-244"
+family = "birefnet"
+file = "BiRefNet-general-epoch_244.onnx"
+sha256 = "..."
+input_name = "..."
+output_name = "..."
+layout = "nchw"
+width = 1024
+height = 1024
+aspect = "stretch"
+resize_filter = "lanczos3"
+channel_order = "rgb"
+scale = 0.003921568627
+mean = [0.485, 0.456, 0.406]
+std = [0.229, 0.224, 0.225]
+activation = "sigmoid"
+output_normalization = "minmax"
+```
+
+Also record source URL, source commit, model/version, model licence identifier, licence file/hash, intended-use approval and opset. A model must fail closed on hash mismatch. Do not download arbitrary weights during a normal inference run.
+
+### 4.2 Geometry and colour rules
+
+- Apply EXIF orientation once before recording canonical dimensions.
+- Preserve the original pixel grid in the final result.
+- Represent every resize as an invertible `GeometryTransform`; distinguish stretch, contain/pad, cover/crop and thumbnail.
+- Restore only the mask/refined outputs through the inverse transform. Do not accidentally return a 1024-pixel or downscaled source image.
+- Keep inference RGB in the encoded space required by each checkpoint.
+- Make foreground-estimator working space (`srgb` or linear-light RGB) an experiment parameter; do not silently change published algorithm behaviour.
+- Store straight alpha internally. Premultiply only for an API/codec that explicitly requires it.
+- Reject NaN/Inf output and handle constant tensors without division by zero.
+
+## 5. Milestones
+
+Every milestone ends with a benchmarkable artifact and a gate. A later milestone must not begin by hiding a failed earlier gate with post-processing.
+
+### M0 — Freeze scope, references and success criteria
+
+Implementation:
+
+- Create `corpus/manifest.jsonl` with input path, PhotoRoom reference path, SHA-256 hashes, width/height, tags, split, reference creation date/tool version if known, subject policy, shadow policy and optional prompt.
+- Define three disjoint splits: `tune`, `validation`, and `blind`. Keep visually near-duplicate bursts in one split.
+- Use a stratified corpus covering portraits/hair, fur, rigid products, food, vehicles, foliage, holes, thin structures, low contrast, reflections, translucency/glass, shadows, multiple subjects, edge-touching subjects, small subjects and very high/low resolution.
+- Decide whether PhotoRoom shadows and translucent effects are part of the target. This policy cannot change midway through scoring.
+- Validate references for orientation, dimensions, alpha presence and PNG colour metadata. Hash the decoded canonical pixels as well as the file.
+
+Gate:
+
+- Every item validates and has a declared split and policy.
+- The blind split is not used by parameter sweeps.
+- A baseline report can be generated even before a model exists by comparing a trivial all-zero/all-one mask to the references.
+
+### M1 — Workspace and typed pipeline skeleton
+
+Implementation:
+
+- Create the workspace/crates in Section 4.
+- Implement `CanonicalImage`, `AlphaMask`, `Trimap`, `RefinedMatte`, prompt, geometry and pipeline configuration types.
+- Add commands: `bgremove run`, `bgremove mask`, `bgremove inspect-model`, `bgremove-bench run`, and `bgremove-bench compare`.
+- Serialize the fully resolved pipeline configuration into every output run.
+
+Gate:
+
+- Unit tests reject dimension mismatch, non-finite alpha and invalid trimaps.
+- A no-op segmenter/refiner/colour estimator can execute end to end.
+- Configuration round-trips deterministically.
+
+### M2 — Decode, geometry, alpha and colour correctness
+
+Implementation:
+
+- Decode JPEG/PNG/WebP and apply EXIF orientation; add further formats only behind explicit features.
+- Implement stretch, contain/pad and thumbnail geometry with recorded inverse.
+- Implement bilinear, triangle, bicubic/Lanczos and nearest-neighbour paths needed to reproduce repositories exactly.
+- Implement straight-alpha PNG output and compositing in both encoded sRGB and linear light for testing.
+- Specify how an already-transparent input is treated: default to multiplying predicted alpha by source alpha and preserve a flag for replacement mode.
+
+Gate:
+
+- Pixel-coordinate fixtures prove round-trip geometry to within declared interpolation tolerance.
+- EXIF orientation fixtures return the expected dimensions/corners.
+- Synthetic RGBA composites match the reference equation within one 8-bit code value, including alpha 0 and alpha 1.
+
+### M3 — ONNX Runtime and model registry
+
+Implementation:
+
+- Add session creation, model hash checking, tensor-shape inspection, dynamic input handling and output selection.
+- CPU is the correctness baseline. Add CoreML/CUDA/etc. through features after the CPU output is reproducible.
+- Report requested and active execution providers; never silently call a CPU run "GPU".
+- Load sessions once per worker and bound inference concurrency to avoid one full model copy per request.
+- Add generic preprocessing primitives and output transforms used by manifests.
+
+Gate:
+
+- A tiny checked-in ONNX fixture proves input/output handling.
+- Provider fallback is visible in logs and run metadata.
+- Model hash/shape/name/opset errors are actionable and occur before inference.
+
+### M4 — IS-Net/DIS baseline and cross-language parity
+
+Implementation:
+
+- Implement IMG.LY IS-Net with 1024 square stretch, bilinear input/output, `(x-128)/256`, output clamp and no invented activation.
+- Register FP32, FP16 and quantized files as encodings of the same family.
+- Implement the rembg normalization/min-max variant as a separate named preprocessing profile, not a silent override.
+- Produce naive straight-alpha RGBA using original RGB.
+
+Gate:
+
+- On fixed fixtures, Rust input tensors match the JavaScript implementation.
+- CPU ONNX masks match reference masks within a documented float/u8 tolerance.
+- Restored output has exactly the canonical source dimensions.
+- Benchmark report names model encoding separately from algorithm family.
+
+### M5 — U2-Net family
+
+Implementation:
+
+- Register U2-Net, U2-Net-P, human segmentation and Silueta ONNX checkpoints.
+- Implement 320 square resize, ImageNet normalization, first-output selection, optional repository-compatible per-image min/max and Lanczos restoration.
+- Register cloth segmentation as a three-class selector that emits one or more binary masks; keep it out of general automatic scores unless the manifest requests a clothing category.
+- Preserve hard-threshold output as a configurable transform.
+
+Gate:
+
+- Rust preprocessing and masks match rembg/Python fixtures.
+- Constant output cannot create NaNs.
+- General, light and human checkpoints appear separately in domain reports, while sharing the same tested adapter implementation.
+
+### M6 — BASNet, DeepLabV3 and TRACER-B7
+
+Implementation:
+
+- Export or acquire pinned ONNX weights with verified output semantics.
+- BASNet: 320 input, ImageNet normalization, first output, optional min/max.
+- DeepLabV3: reproduce aspect-preserving thumbnail and hard `argmax` classes; document class mapping in the manifest.
+- TRACER-B7: 640 input, ImageNet normalization and direct soft-mask output.
+- Do not register the unavailable TRACER hair checkpoint as runnable.
+
+Gate:
+
+- Each adapter has tensor-level parity against CarveKit on at least three image geometries and two colour ranges.
+- DeepLab's hard mask is not accidentally softened before its explicit refiner.
+- Raw-alpha tournament report compares U2-Net, IS-Net, BASNet, DeepLab and TRACER with identical downstream settings.
+
+### M7 — BiRefNet family
+
+Implementation:
+
+- Implement one BiRefNet adapter: 1024 square, ImageNet normalization, sigmoid logits and configurable raw-clamp versus repository min/max.
+- Register general, lite, portrait, DIS, HRSOD, COD and massive checkpoints.
+- Treat the variants as specialists in reports; do not select them using ground-truth tags unavailable at runtime.
+
+Gate:
+
+- Sigmoid and normalization order is covered by tensor fixtures.
+- All variants pass shape and finite-output tests.
+- General/lite benchmark includes quality, model bytes, cold start, median/p95 latency and peak resident memory.
+
+### M8 — BRIA RMBG family
+
+Implementation:
+
+- Implement a manifest-driven adapter for RMBG-1.4 and RMBG-2.0 rather than hard-coding one wrapper's assumptions.
+- Reproduce each repository profile first, then compare calibrated/clamped output against per-image min/max.
+- Keep checkpoint files external and disabled until their licence is approved for the intended deployment.
+
+Gate:
+
+- Rust matches the `rmbg` crate profile and rembg profile on parity fixtures.
+- Licence metadata is present; commercial builds can exclude unapproved weights/features.
+- BRIA participates in the same raw-alpha tournament with no extra cleanup.
+
+### M9 — Morphology and trimap generation
+
+Implementation:
+
+- Implement threshold, erosion, dilation, disk opening and Gaussian blur in pure Rust with explicit border rules.
+- Implement symmetric rembg trimaps and probability-aware CarveKit trimaps.
+- Add absolute and image-relative radius configuration.
+- Emit trimap PNGs and unknown-band statistics in benchmark artifacts.
+
+Gate:
+
+- Binary operations match small hand-computed matrices exactly.
+- Rust trimaps match Python fixture outputs pixel-for-pixel, including borders.
+- Property tests enforce values in `{background, unknown, foreground}` and no overlap between certain foreground/background.
+
+### M10 — Classical closed-form alpha matting
+
+Implementation:
+
+- Port the closed-form matting Laplacian and sparse solve used through PyMatting. Separate matrix construction, solver and constraint handling.
+- Add convergence tolerance, iteration cap, residual reporting and a safe fallback to the coarse alpha.
+- Port/test the multilevel foreground estimator used by PyMatting so this path returns both refined alpha and decontaminated foreground.
+- Support a bounded working resolution like `backgroundremover`'s base size, but restore results to canonical dimensions.
+
+Gate:
+
+- Analytic/synthetic alpha cases meet a numeric error threshold.
+- Fixtures match Python alpha and composites within a documented tolerance.
+- Non-convergence is reported and deterministic; it never returns corrupt RGBA.
+- Runtime and memory limits are recorded because the sparse solve can dominate.
+
+### M11 — FBA Matting
+
+Implementation:
+
+- Export/pin FBA Matting to ONNX with its full input transform and seven-channel output: alpha, foreground RGB and background RGB.
+- Reproduce RGB-to-BGR conversion, group-normalized image, two-channel trimap, transformed trimap, size-to-multiple-of-eight and FBA fusion.
+- Test CarveKit's alpha-only behaviour and the improved full-FBA foreground behaviour as separate candidates.
+- Run initially at 1024 and 2048 only if memory gates permit.
+
+Gate:
+
+- All inputs and seven outputs match the Python graph on parity fixtures.
+- Certain trimap background stays alpha 0; certain foreground preservation is explicitly tested rather than assumed.
+- Full-FBA composite metrics are reported separately from alpha-only metrics.
+
+### M12 — ViTMatte refinement
+
+Implementation:
+
+- Implement four-channel fixed-1024 input: bilinear RGB, nearest trimap, both in `[0,1]`, no mean/std transform.
+- Register small/base Distinctions-646 and Composition-1k checkpoints.
+- Cache one session per chosen variant and return refined alpha only.
+- Pair with each foreground estimator rather than preserving contaminated RGB by default.
+
+Gate:
+
+- Rust input tensors/alpha match the rembg implementation.
+- Resize interpolation and fixed dimensions are locked by tests.
+- Compare the four variants on edge-category metrics and resource use; pick a default only after validation, not from aggregate alpha IoU alone.
+
+### M13 — Foreground-colour recovery
+
+Implementation:
+
+- Implement original-RGB control, PyMatting-style multilevel estimation, approximate fast foreground estimation and FBA-provided foreground.
+- For the fast estimator, implement tested O(width*height) box blurs with `f32` accumulation checks, configurable coarse/fine radii (starting near 90/6 at reference scale), epsilon and edge policy.
+- Test encoded-sRGB versus linear-light working space as an ablation.
+- Avoid unstable division at alpha extremes and clamp only at declared points.
+
+Gate:
+
+- Synthetic composites with known `F`, `B`, and `A` quantify foreground recovery independently of segmentation.
+- Uniform fields, impulses, borders and randomized images validate box blur against a slow reference implementation.
+- Candidate ranking uses multi-background composites and edge bands, never raw invisible RGB.
+
+### M14 — Prompted SAM subject selection
+
+Implementation:
+
+- Port encoder/decoder session flow and point/box prompt transforms.
+- Support positive and negative points, boxes and iterative prior-mask input.
+- Preserve individual candidate masks and quality scores if exposed; do not blindly union every positive-logit output.
+- Define an optional auto-prompt experiment from coarse segmenter components, but keep manual-prompt scores separate from fully automatic scores.
+
+Gate:
+
+- Coordinate transforms round-trip on portrait, landscape and square images.
+- Prompted Rust masks match Python fixtures.
+- Reports visibly label human-assisted results; centre-point defaults cannot compete in the automatic leaderboard without being declared.
+
+### M15 — Benchmark tournament and parameter search
+
+Implementation:
+
+- Run a staged tournament to avoid an unmanageable Cartesian product:
+  1. all raw segmenters with no cleanup/refiner and original RGB;
+  2. top segmenters crossed with trimap/refiner candidates;
+  3. top alpha pipelines crossed with foreground estimators;
+  4. tune only surviving parameters on `tune`, rank on `validation`;
+  5. evaluate `blind` only for release candidates.
+- Support deterministic grid and seeded random/Latin-hypercube sweeps.
+- Cache raw model masks by input hash + model manifest hash so post-processing experiments do not rerun inference.
+- Use paired per-image comparisons and bootstrap confidence intervals.
+
+Initial named candidates (not assumptions about winners):
+
+| ID | Coarse stage | Refiner | Foreground |
+|---|---|---|---|
+| `P0-u2-cf` | U2-Net general | closed-form | multilevel |
+| `P1-isnet-fast` | IS-Net FP32 | none | fast estimator |
+| `P2-tracer-fba` | TRACER-B7 | FBA | FBA foreground |
+| `P3-biref-vit` | BiRefNet general | ViTMatte small Distinctions | fast estimator |
+| `P4-bria-vit` | BRIA approved version | ViTMatte small Distinctions | fast estimator |
+| `P5-hybrid` | reserved for M16 | adaptive | selected by evidence |
+
+Gate:
+
+- Re-running the same configuration produces identical artifact hashes on CPU.
+- A champion must improve the validation aggregate with a confidence interval and must not regress a declared critical category beyond its budget.
+- No parameter chosen from blind results is promoted without creating a new untouched blind set.
+
+### M16 — Evidence-driven hybrid pipeline
+
+Only start this milestone after the ablation data identifies failure modes.
+
+Candidate novel integration:
+
+1. Run the best general segmenter once globally.
+2. Optionally run one complementary segmenter only when cheap uncertainty features predict risk.
+3. Build uncertainty from soft-alpha range, gradient, local image contrast, component topology and cross-model disagreement.
+4. Convert uncertainty into an adaptive trimap.
+5. Refine only cropped, overlapping uncertain regions at high resolution, mapping them back through exact geometry and feathering crop seams.
+6. Recover foreground colour only where alpha is fractional or contamination risk is high.
+7. Apply conservative topology rules conditioned on evidence; never globally delete small components because hair, straps and product details are small.
+
+Possible extensions, each requiring its own ablation:
+
+- alpha fusion weighted by per-model confidence;
+- coarse mask used to auto-prompt SAM for ambiguous multi-object scenes;
+- category-free router trained only on input/runtime features, never PhotoRoom labels available only during evaluation;
+- high-resolution edge tiles with global low-resolution context;
+- a small learned correction model trained from licensed data, with PhotoRoom outputs used only if their terms permit that use.
+
+Gate:
+
+- Every hybrid component beats its removal ablation on validation.
+- Latency/memory cost is reported alongside quality gain.
+- Blind-set improvement holds across categories and worst-decile images.
+- The system still emits intermediate artifacts explaining which route ran.
+
+### M17 — Performance, packaging and production hardening
+
+Implementation:
+
+- Benchmark CPU first, then CoreML on Apple Silicon and optional CUDA/OpenVINO.
+- Measure model load, first inference, warm median/p95 throughput, peak RSS, model bytes and output encode time separately.
+- Add bounded worker pools, cancellation, input pixel limits and model/session lifetime management.
+- Add batch image mode. Add video only after a temporal-consistency design; frame-independent batching from `backgroundremover` is functional but can flicker and is not a new quality mechanism.
+- Generate a model bill of materials and third-party notices. Keep code and weight licences distinct.
+
+Gate:
+
+- CPU and accelerated outputs remain within declared numeric tolerance.
+- Provider fallback, OOM and malformed image/model errors are tested.
+- Reproducible release bundles include manifests and hashes, not untracked auto-downloaded weights.
+
+## 6. PhotoRoom comparison and iteration protocol
+
+### 6.0 Current six-image arena
+
+The checked-in arena is `test_images/arena.jsonl`. Inputs are under
+`test_images/reference/` and PhotoRoom targets are under
+`test_images/photoroom/`; files pair by numeric stem. All six pairs have equal
+dimensions and every target is an 8-bit sRGB RGBA PNG with all 256 alpha levels.
+
+| ID | Dimensions | Arena challenge | Fractional-alpha pixels in PhotoRoom target |
+|---|---:|---|---:|
+| 1 | 1041x1511 | Full-body person, hair, draped cloth, sandals, baked checkerboard | 1.2815% |
+| 2 | 941x1672 | Full-body person, beard and pale clothing against a similar studio background | 1.2532% |
+| 3 | 1254x1254 | Gold eye artwork on black, many one-pixel lines, holes, glow and transparency | 12.9316% |
+| 4 | 1087x1446 | Emissive circular artwork, particles, glow and extremely soft transparency | 40.9734% |
+| 5 | 512x512 | Hooded creature, many thin tendrils, low resolution, baked checkerboard | 7.6740% |
+| 6 | 1254x1254 | Armoured character, horns/hair/tail, low-contrast extremities and floor shadow | 2.0218% |
+
+These six images form the fixed **arena**, not a statistically adequate training
+set. Use them to rank source-faithful implementations and fixed full pipelines.
+Do not tune six different configurations for six filenames. Until more images
+exist, parameter tuning must use leave-one-image-out evaluation: tune on five,
+run once on the held-out sixth, repeat six times, and aggregate only the six
+held-out predictions.
+
+Arena rules:
+
+1. Every automatic candidate processes all six inputs with one resolved
+   pipeline configuration. A router is allowed only if its rule uses runtime
+   image features and is frozen before the arena run.
+2. Output must be an RGBA PNG at exactly the input dimensions. A crash, missing
+   output, dimension mismatch or non-finite alpha scores zero for that image.
+3. No hand masks, per-file thresholds, filename lookup or PhotoRoom alpha may
+   enter inference. Prompted SAM runs on a separate assisted leaderboard.
+4. Give each image equal weight. Do not pool pixels across the corpus, which
+   would overweight large images and nearly opaque interiors.
+5. Compute full-canvas alpha/selection metrics, but compute boundary and
+   composite metrics both full-canvas and in an evaluation ROI: the union of
+   candidate/reference alpha bounding boxes padded by 5% of image diagonal.
+   The ROI result feeds the agreement score so empty background cannot dominate.
+6. Rank by highest mean `PhotoRoomAgreement-v1`, not by absolute numeric
+   distance from 0.99. A score of 0.999 is better than 0.991; 0.99 is a pass
+   threshold, not an optimum to approach from either side.
+7. Tie-break candidates within 0.0005 by: higher minimum per-image score, then
+   higher mean boundary F1, then lower warm p95 latency, then lower peak RSS.
+8. Publish three results: raw-alpha champion, full-pipeline champion and
+   assisted/prompted champion. Only the full automatic pipeline is the overall
+   background-removal winner.
+
+For this six-image arena, replace the percentile gate in Section 6.3 with a
+stronger, interpretable gate: mean agreement at least 0.99, every image at least
+0.97, and no zero/failure result. Report portrait/character results (1, 2, 5,
+6) separately from emissive-artwork results (3, 4); a winner must not achieve a
+high aggregate by failing one of those tracks.
+
+### 6.1 Corpus manifest
+
+One JSONL record should resemble:
+
+```json
+{
+  "id": "portrait_0042",
+  "input": "inputs/portrait_0042.jpg",
+  "reference": "references/portrait_0042.photoroom.png",
+  "input_sha256": "...",
+  "reference_sha256": "...",
+  "split": "validation",
+  "tags": ["portrait", "curly-hair", "low-contrast"],
+  "subject_policy": "primary-subject",
+  "shadow_policy": "exclude",
+  "prompt": null
+}
+```
+
+Keep inputs/references private and ignored if redistribution rights are absent. Track only the manifest schema and synthetic/redistributable fixtures.
+
+### 6.2 Metric families
+
+No single metric is sufficient. Report all of these per image and by tag.
+
+Alpha/selection:
+
+- alpha MAE, RMSE and normalized SAD;
+- soft IoU plus binary IoU at alpha thresholds 0.1, 0.5 and 0.9;
+- precision/recall to distinguish missing subject from retained background;
+- connected-component/hole disagreement for topology.
+
+Boundary/matting:
+
+- boundary F-score at tolerances scaled to image diagonal, with 1/2/4-pixel equivalents also reported at a canonical resolution;
+- gradient error and connectivity error;
+- the same alpha metrics restricted to a dilated PhotoRoom boundary band;
+- fractional-alpha error where `0.02 < A_ref < 0.98`.
+
+Foreground colour/composites:
+
+- composite both candidate and reference over black, white, 50% gray, saturated red/green/blue and deterministic textured backgrounds;
+- compute linear-RGB MAE/PSNR and SSIM; optionally LPIPS in an offline auxiliary evaluator, clearly separated from the pure-Rust core;
+- compute edge-band colour error and alpha-weighted foreground error;
+- never compare RGB where both candidate and reference alpha are effectively 0.
+
+Performance:
+
+- model bytes, cold-start time, warm median/p95 latency, images/sec and peak RSS;
+- execution provider requested/active and hardware metadata.
+
+### 6.3 Agreement target
+
+Use this initial versioned score, with every term clipped to `[0,1]`:
+
+```text
+S_alpha     = 1 - mean(abs(A_candidate - A_reference))
+S_boundary  = boundary_F1(alpha_threshold=0.5,
+                          tolerance=max(1px, round(0.0015 * image_diagonal)))
+S_selection = soft_IoU(A_candidate, A_reference)
+S_composite = mean(SSIM(candidate_composite, reference_composite)
+                   over the declared benchmark backgrounds)
+
+PhotoRoomAgreement-v1 =
+    0.35 * S_alpha + 0.25 * S_boundary +
+    0.15 * S_selection + 0.25 * S_composite
+```
+
+Publish the formula, metric implementation version, resize/colour rules and
+background hashes in run metadata. Re-version rather than silently changing
+the formula. Topology, worst-decile and category metrics remain hard guardrails
+because a weighted score can conceal a locally severe error.
+
+Do not accept "99%" from the aggregate alone. A release-candidate parity gate should also require, on the blind split:
+
+- median agreement >= 0.99 and 10th percentile >= 0.97;
+- mean alpha MAE <= 0.01;
+- boundary F1 at the declared tolerance >= 0.98;
+- no critical taxonomy category below its explicit floor;
+- no unexplained subject-selection failures;
+- performance inside the product budget.
+
+These are ambitious starting gates and may need recalibration once the corpus reveals PhotoRoom policy differences. They are not a promise that public weights can reach them.
+
+### 6.4 Report artifacts
+
+For every `(image, pipeline)` save:
+
+```text
+runs/<run-id>/<image-id>/
+  resolved-config.json
+  coarse-alpha.png
+  cleaned-alpha.png
+  trimap.png
+  refined-alpha.png
+  foreground.png
+  cutout.png
+  composite-white.png
+  composite-black.png
+  alpha-diff.png
+  boundary-diff.png
+  metrics.json
+```
+
+Generate a static HTML report with sortable aggregate/tag metrics and a visual row containing input, PhotoRoom reference, candidate, alpha heatmap, boundary overlay and black/white composites. Display best, median, worst-decile and largest-regression images; averages alone conceal catastrophic failures.
+
+### 6.5 Iteration loop
+
+1. State one hypothesis, for example: "adaptive unknown bands improve curly hair without expanding rigid-product edges."
+2. Change one stage or a small declared parameter group.
+3. Reuse cached coarse masks where legal for the experiment.
+4. Run unit/parity tests, then `tune`, then `validation`.
+5. Inspect metric deltas by tag and the worst visual regressions.
+6. Promote only a statistically credible improvement within performance limits.
+7. Run `blind` only for a release candidate.
+8. If blind results influence another change, retire that split and collect a new blind set.
+
+## 7. Test pyramid
+
+### Level 1 — Pure unit/property tests
+
+- resize coordinates and inverse transforms;
+- normalization/layout/channel order;
+- sigmoid, clamp and min/max including constant/non-finite tensors;
+- morphology and trimap matrices;
+- box blur versus a slow implementation;
+- alpha compositing and straight/premultiplied conversion;
+- deterministic behaviour and invalid-input rejection.
+
+### Level 2 — Cross-language parity fixtures
+
+For every imported mechanism, run the source implementation once and store small, licensed fixtures for decoded RGB, preprocessed tensor, raw ONNX output, restored alpha and final cutout. Rust should match the earliest divergent stage, not merely produce a visually similar final PNG.
+
+Required parity sources:
+
+- IMG.LY JavaScript for IS-Net;
+- rembg Python for U2-Net, IS-Net, BiRefNet, BRIA, ViTMatte and SAM;
+- CarveKit Python for BASNet, DeepLabV3, TRACER, trimaps and FBA;
+- PyMatting/backgroundremover for closed-form alpha and foreground estimation;
+- the two existing Rust projects as regression references, not authorities when they conflict with model documentation.
+
+### Level 3 — Synthetic ground truth
+
+- known foreground/background/alpha composites for decontamination;
+- antialiased geometric shapes, one-pixel lines, holes and disconnected parts;
+- generated hair/fur-like filaments at multiple scales;
+- translucent layers and motion-blurred edges;
+- solid/constant/near-black images that expose min/max division errors.
+
+Synthetic data provides true `F`, `B`, and `A`, which PhotoRoom cutouts cannot.
+
+### Level 4 — PhotoRoom regression corpus
+
+Use the metric/report protocol in Section 6. This is the optimization target, not the only source of correctness.
+
+### Level 5 — Performance and robustness
+
+- Criterion-style microbenchmarks for resize, morphology, blur and composite;
+- end-to-end cold/warm benchmarks per model/provider;
+- fuzz image decoders and manifest parsing within strict size limits;
+- OOM/concurrency/provider-fallback tests;
+- very wide/tall, one-colour, grayscale, CMYK-converted and existing-alpha inputs.
+
+## 8. Recommended order and decision points
+
+The shortest evidence-producing route is:
+
+`M0 -> M1 -> M2 -> M3 -> M4 -> M7 -> M9 -> M12 -> M13 -> M15`
+
+This yields a modern end-to-end contender early. Then add `M5`, `M6`, `M8`, `M10`, `M11` and `M14` to complete the mechanism matrix. Start `M16` only when the tournament shows exactly where the best public single pipeline fails.
+
+Decision points:
+
+- After M4: prove the harness by matching an existing implementation.
+- After M7/M8: pick no winner yet; identify raw-mask strengths by taxonomy.
+- After M10-M13: decide refiner and foreground estimator independently.
+- After M15: promote one simple champion and one quality-max champion.
+- After M16: retain the hybrid only if its gain survives ablation and blind data.
+
+## 9. Risks and explicit non-goals
+
+- Public models may not reproduce PhotoRoom's subject policy or shadow handling.
+- Pixel agreement can be capped by different resampling, colour management, PhotoRoom version changes, or PNG premultiplication even when visuals match.
+- A segmenter cannot recover details it never selected; a colour estimator cannot repair an incorrect alpha.
+- Reference-output tuning risks distillation/terms-of-use issues. Confirm that the references may be used for evaluation or training before fitting a model to them.
+- Repository code licences and model-weight licences are separate. The local code trees show MIT, Apache-2.0 and AGPL software, while some READMEs flag separately restricted weights. Perform a release-time legal review and avoid copying AGPL implementation code into an incompatible product.
+- Training a new segmentation network in Rust is not an early milestone. Training/export can use appropriate ML tooling later; production inference remains Rust/ONNX.
+- Text-guided automatic subject choice, generative edge reconstruction and video temporal matting are out of scope until the still-image benchmark is stable.
+
+## 10. Definition of done
+
+The project is ready for champion tuning when:
+
+- every runnable local mechanism above has a manifest, Rust adapter and parity test, or a documented exclusion reason;
+- all segmenters can be combined with compatible mask/refiner/colour stages;
+- PhotoRoom runs are reproducible from hashes and resolved configuration;
+- reports expose aggregate, per-category and worst-case behaviour;
+- model and software licensing are traceable;
+- one simple and one quality-max pipeline have passed validation and blind gates without using the blind set for tuning.
+
+At that point, "make it more like PhotoRoom" becomes a sequence of testable hypotheses rather than an open-ended visual judgement.

@@ -1,0 +1,227 @@
+{
+  "report_version": "m0.baseline.v1",
+  "schema_version": "m0.corpus.v1",
+  "manifest": "corpus/manifest.jsonl",
+  "metric_definition": {
+    "alpha_mae": "mean(abs(candidate_alpha - reference_alpha)) over canonical pixels",
+    "soft_iou": "sum(min(candidate_alpha, reference_alpha)) / sum(max(candidate_alpha, reference_alpha)); 1.0 when both sums are zero",
+    "alpha_levels": "Reference alpha is decoded as 8-bit RGBA and normalized to [0,1].",
+    "comparison": "M0 baseline is alpha-only and intentionally does not claim the Section 6 composite agreement score; full candidates begin in later milestones."
+  },
+  "tuning_policy": {
+    "blind_is_evaluation_only": true,
+    "sweep_inputs": [
+      "tune",
+      "validation"
+    ],
+    "statement": "All-zero and all-one controls are fixed reports, not tunable models. No sweep, threshold, or configuration decision may read blind records."
+  },
+  "images": [
+    {
+      "id": "arena-1",
+      "split": "tune",
+      "width": 1041,
+      "height": 1511,
+      "reference_fractional_alpha": 0.01281540238697836,
+      "zero": {
+        "alpha_mae": 0.30527643800180565,
+        "soft_iou": 0.0,
+        "agreement_alpha_only": 0.6947235619981944,
+        "score_status": "control-only"
+      },
+      "one": {
+        "alpha_mae": 0.6947235619981926,
+        "soft_iou": 0.30527643800180565,
+        "agreement_alpha_only": 0.30527643800180737,
+        "score_status": "control-only"
+      }
+    },
+    {
+      "id": "arena-2",
+      "split": "tune",
+      "width": 941,
+      "height": 1672,
+      "reference_fractional_alpha": 0.012531842842542546,
+      "zero": {
+        "alpha_mae": 0.3739642944415772,
+        "soft_iou": 0.0,
+        "agreement_alpha_only": 0.6260357055584228,
+        "score_status": "control-only"
+      },
+      "one": {
+        "alpha_mae": 0.6260357055584209,
+        "soft_iou": 0.3739642944415772,
+        "agreement_alpha_only": 0.3739642944415791,
+        "score_status": "control-only"
+      }
+    },
+    {
+      "id": "arena-3",
+      "split": "validation",
+      "width": 1254,
+      "height": 1254,
+      "reference_fractional_alpha": 0.12931633128057202,
+      "zero": {
+        "alpha_mae": 0.13717666590405855,
+        "soft_iou": 0.0,
+        "agreement_alpha_only": 0.8628233340959415,
+        "score_status": "control-only"
+      },
+      "one": {
+        "alpha_mae": 0.8628233340961777,
+        "soft_iou": 0.13717666590405855,
+        "agreement_alpha_only": 0.13717666590382227,
+        "score_status": "control-only"
+      }
+    },
+    {
+      "id": "arena-4",
+      "split": "validation",
+      "width": 1087,
+      "height": 1446,
+      "reference_fractional_alpha": 0.4097335415020467,
+      "zero": {
+        "alpha_mae": 0.14550652004228323,
+        "soft_iou": 0.0,
+        "agreement_alpha_only": 0.8544934799577167,
+        "score_status": "control-only"
+      },
+      "one": {
+        "alpha_mae": 0.8544934799587314,
+        "soft_iou": 0.14550652004228323,
+        "agreement_alpha_only": 0.14550652004126863,
+        "score_status": "control-only"
+      }
+    },
+    {
+      "id": "arena-5",
+      "split": "blind",
+      "width": 512,
+      "height": 512,
+      "reference_fractional_alpha": 0.07674026489257812,
+      "zero": {
+        "alpha_mae": 0.2657358805338629,
+        "soft_iou": 0.0,
+        "agreement_alpha_only": 0.7342641194661371,
+        "score_status": "control-only"
+      },
+      "one": {
+        "alpha_mae": 0.7342641194661181,
+        "soft_iou": 0.2657358805338629,
+        "agreement_alpha_only": 0.26573588053388186,
+        "score_status": "control-only"
+      }
+    },
+    {
+      "id": "arena-6",
+      "split": "blind",
+      "width": 1254,
+      "height": 1254,
+      "reference_fractional_alpha": 0.020217918291451406,
+      "zero": {
+        "alpha_mae": 0.19856954103625207,
+        "soft_iou": 0.0,
+        "agreement_alpha_only": 0.801430458963748,
+        "score_status": "control-only"
+      },
+      "one": {
+        "alpha_mae": 0.8014304589637377,
+        "soft_iou": 0.19856954103625207,
+        "agreement_alpha_only": 0.19856954103626234,
+        "score_status": "control-only"
+      }
+    }
+  ],
+  "aggregate": {
+    "by_candidate": {
+      "all-one": {
+        "image_count": 6,
+        "mean_alpha_mae": 0.7622951100068964,
+        "mean_soft_iou": 0.2377048899933066,
+        "mean_agreement_alpha_only": 0.23770488999310357
+      },
+      "all-zero": {
+        "image_count": 6,
+        "mean_alpha_mae": 0.2377048899933066,
+        "mean_soft_iou": 0.0,
+        "mean_agreement_alpha_only": 0.7622951100066934
+      }
+    },
+    "by_split": {
+      "blind": {
+        "all-one": {
+          "image_count": 2,
+          "mean_alpha_mae": 0.767847289214928,
+          "mean_soft_iou": 0.23215271078505748,
+          "mean_agreement_alpha_only": 0.2321527107850721
+        },
+        "all-zero": {
+          "image_count": 2,
+          "mean_alpha_mae": 0.23215271078505748,
+          "mean_soft_iou": 0.0,
+          "mean_agreement_alpha_only": 0.7678472892149426
+        }
+      },
+      "tune": {
+        "all-one": {
+          "image_count": 2,
+          "mean_alpha_mae": 0.6603796337783068,
+          "mean_soft_iou": 0.33962036622169145,
+          "mean_agreement_alpha_only": 0.3396203662216932
+        },
+        "all-zero": {
+          "image_count": 2,
+          "mean_alpha_mae": 0.33962036622169145,
+          "mean_soft_iou": 0.0,
+          "mean_agreement_alpha_only": 0.6603796337783086
+        }
+      },
+      "validation": {
+        "all-one": {
+          "image_count": 2,
+          "mean_alpha_mae": 0.8586584070274546,
+          "mean_soft_iou": 0.1413415929731709,
+          "mean_agreement_alpha_only": 0.14134159297254545
+        },
+        "all-zero": {
+          "image_count": 2,
+          "mean_alpha_mae": 0.1413415929731709,
+          "mean_soft_iou": 0.0,
+          "mean_agreement_alpha_only": 0.858658407026829
+        }
+      }
+    }
+  },
+  "coverage": {
+    "observed_tags": [
+      "fur",
+      "hair",
+      "holes",
+      "low-contrast",
+      "portrait",
+      "reflections",
+      "shadows",
+      "thin-structures",
+      "translucency",
+      "very-low-resolution"
+    ],
+    "missing_taxonomy_tags": [
+      "rigid-product",
+      "food",
+      "vehicle",
+      "foliage",
+      "glass",
+      "multiple-subjects",
+      "edge-touching",
+      "small-subject",
+      "very-high-resolution"
+    ],
+    "limitation": "The six supplied arena pairs are frozen for source-faithful comparison, but are not statistically adequate coverage of the broader taxonomy. Missing categories remain declared limitations, not malformed-corpus failures."
+  },
+  "gate": {
+    "status": "pass",
+    "every_item_valid": true,
+    "blind_not_used_by_sweeps": true,
+    "coverage_limitations_declared": true
+  }
+}
