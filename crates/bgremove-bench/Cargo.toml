@@ -3,7 +3,7 @@ name = "bgremove-bench"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "M0 regression and M1 benchmark harness"
+description = "M0 regression and M2 benchmark harness"
 
 [[bin]]
 name = "bgremove-bench"
@@ -19,4 +19,3 @@ sha2.workspace = true
 bgremove-core = { path = "../bgremove-core" }
 bgremove-color = { path = "../bgremove-color" }
 bgremove-matting = { path = "../bgremove-matting" }
-bgremove-cli = { path = "../bgremove-cli" }

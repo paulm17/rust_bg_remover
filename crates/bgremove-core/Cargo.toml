@@ -7,5 +7,6 @@ description = "Typed, invariant-enforcing background-removal pipeline contracts"
 
 [dependencies]
 anyhow.workspace = true
+image.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -1,0 +1,35 @@
+{
+  "schema": "m2.pipeline.v1",
+  "segmenter": "noop",
+  "mask_transform": "identity",
+  "alpha_refiner": "noop",
+  "foreground_estimator": "original-rgb",
+  "geometry": {
+    "source_width": 1041,
+    "source_height": 1511,
+    "target_width": 1041,
+    "target_height": 1511,
+    "policy": {
+      "policy": "stretch"
+    },
+    "filter": "nearest",
+    "scale_x": 1.0,
+    "scale_y": 1.0,
+    "offset_x": 0.0,
+    "offset_y": 0.0,
+    "intermediate_width": 1041,
+    "intermediate_height": 1511,
+    "pad_left": 0,
+    "pad_right": 0,
+    "pad_top": 0,
+    "pad_bottom": 0,
+    "crop_left": 0,
+    "crop_right": 0,
+    "crop_top": 0,
+    "crop_bottom": 0
+  },
+  "working_color_space": "srgb",
+  "output_mode": "straight-rgba",
+  "parameters": {},
+  "transparent_input_policy": "multiply-predicted"
+}

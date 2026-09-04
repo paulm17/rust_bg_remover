@@ -3,7 +3,7 @@ name = "bgremove-color"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "M1 foreground estimator boundary; recovery/compositing begin later"
+description = "Straight-alpha foreground estimation and encoded/linear compositing"
 
 [dependencies]
 bgremove-core = { path = "../bgremove-core" }

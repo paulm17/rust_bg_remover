@@ -1,9 +1,9 @@
-// M0 corpus validator and M1 benchmark implementation.
+// M0 corpus validator and M2 deterministic benchmark implementation.
 
 use anyhow::{anyhow, bail, Context, Result};
-use bgremove_cli::load_canonical;
 use bgremove_color::OriginalRgbEstimator;
-use bgremove_core::{NoOpSegmenter, Pipeline, PipelineConfig};
+use bgremove_core::io::{encode_mask_png, encode_straight_rgba_png, load_canonical};
+use bgremove_core::{NoOpSegmenter, Pipeline, PipelineConfig, TransparentInputPolicy};
 use bgremove_matting::IdentityMaskTransform;
 use clap::{Parser, Subcommand};
 use image::{GenericImageView, ImageDecoder, ImageReader};
@@ -21,7 +21,7 @@ const BASELINE_REPORT_VERSION: &str = "m0.baseline.v1";
 #[command(
     name = "bgremove-bench",
     version,
-    about = "M0 regression and M1 benchmark harness"
+    about = "M0 regression and M2 benchmark harness"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -49,14 +49,16 @@ enum Command {
         #[arg(long, default_value = "runs/m0-baseline/report.json")]
         output: PathBuf,
     },
-    /// Execute the deterministic M1 no-op pipeline and write a run artifact.
+    /// Execute the deterministic M2 no-op pipeline and write PNG/run artifacts.
     Run {
         #[arg(long)]
         input: PathBuf,
-        #[arg(long, default_value = "runs/m1-bench")]
+        #[arg(long, default_value = "runs/m2-bench")]
         output: PathBuf,
+        #[arg(long, default_value = "multiply-predicted", value_parser = parse_policy)]
+        transparent_input_policy: TransparentInputPolicy,
     },
-    /// Compare two deterministic M1 artifact files byte-for-byte.
+    /// Compare two deterministic artifact files byte-for-byte.
     Compare {
         #[arg(long)]
         left: PathBuf,
@@ -281,16 +283,30 @@ fn main() -> Result<()> {
             write_baseline(&manifest, &output, &records)?;
             println!("wrote {}", output.display());
         }
-        Command::Run { input, output } => write_m1_run(&input, &output)?,
-        Command::Compare { left, right } => compare_m1_runs(&left, &right)?,
+        Command::Run {
+            input,
+            output,
+            transparent_input_policy,
+        } => write_m2_run(&input, &output, transparent_input_policy)?,
+        Command::Compare { left, right } => compare_m2_runs(&left, &right)?,
     }
     Ok(())
 }
 
-fn write_m1_run(input: &Path, output: &Path) -> Result<()> {
+fn parse_policy(value: &str) -> std::result::Result<TransparentInputPolicy, String> {
+    match value {
+        "multiply-predicted" => Ok(TransparentInputPolicy::MultiplyPredicted),
+        "replace-source-alpha" => Ok(TransparentInputPolicy::ReplaceSourceAlpha),
+        _ => Err("expected multiply-predicted or replace-source-alpha".into()),
+    }
+}
+
+fn write_m2_run(input: &Path, output: &Path, policy: TransparentInputPolicy) -> Result<()> {
     let image = load_canonical(input)?;
     let (width, height) = image.dimensions();
-    let config = PipelineConfig::default().resolved_for(width, height)?;
+    let config = PipelineConfig::default()
+        .with_transparent_input_policy(policy)
+        .resolved_for(width, height)?;
     let mut pipeline = Pipeline::new(
         config.clone(),
         Box::new(NoOpSegmenter),
@@ -302,9 +318,14 @@ fn write_m1_run(input: &Path, output: &Path) -> Result<()> {
     fs::create_dir_all(output)?;
     fs::write(
         output.join("resolved-config.json"),
-        config.canonical_json()?,
+        config.canonical_json_m2()?,
     )?;
-    let artifact = serde_json::json!({ "schema": "m1.bench-artifact.v1", "width": width, "height": height, "alpha_sum": result.alpha().data().iter().sum::<f32>(), "note": "M1 no-op pipeline" });
+    fs::write(
+        output.join("cutout.png"),
+        encode_straight_rgba_png(&result)?,
+    )?;
+    fs::write(output.join("mask.png"), encode_mask_png(result.alpha())?)?;
+    let artifact = serde_json::json!({ "schema": "m2.bench-artifact.v1", "width": width, "height": height, "alpha_sum": result.alpha().data().iter().sum::<f32>(), "source_alpha_present": image.source_alpha().data().iter().any(|a| *a < 1.0), "transparent_input_policy": policy.as_str(), "png_outputs": ["cutout.png", "mask.png"], "note": "M2 deterministic no-op benchmark artifact" });
     let mut bytes = serde_json::to_vec_pretty(&artifact)?;
     bytes.push(b'\n');
     fs::write(output.join("run.json"), bytes)?;
@@ -312,7 +333,7 @@ fn write_m1_run(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-fn compare_m1_runs(left: &Path, right: &Path) -> Result<()> {
+fn compare_m2_runs(left: &Path, right: &Path) -> Result<()> {
     let a = fs::read(left).with_context(|| format!("read left artifact {}", left.display()))?;
     let b = fs::read(right).with_context(|| format!("read right artifact {}", right.display()))?;
     let equal = a == b;
@@ -323,7 +344,7 @@ fn compare_m1_runs(left: &Path, right: &Path) -> Result<()> {
         b.len()
     );
     if !equal {
-        bail!("M1 artifact bytes differ")
+        bail!("M2 artifact bytes differ")
     }
     Ok(())
 }

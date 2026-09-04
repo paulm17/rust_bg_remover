@@ -1,0 +1,19 @@
+{
+  "schema": "m2.artifact.v1",
+  "width": 1041,
+  "height": 1511,
+  "alpha_min": 0.0,
+  "alpha_max": 0.0,
+  "alpha_sum": 0.0,
+  "source_alpha_present": false,
+  "transparent_input_policy": "multiply-predicted",
+  "geometry_scale": [
+    1.0,
+    1.0
+  ],
+  "geometry_offsets": [
+    0.0,
+    0.0
+  ],
+  "note": "M2 no-op pipeline; straight-alpha PNG and canonical geometry"
+}
