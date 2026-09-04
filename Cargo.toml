@@ -1,17 +1,25 @@
-[package]
-name = "bgremove-m0"
+[workspace]
+members = [
+    "crates/bgremove-core",
+    "crates/bgremove-ort",
+    "crates/bgremove-models",
+    "crates/bgremove-matting",
+    "crates/bgremove-color",
+    "crates/bgremove-cli",
+    "crates/bgremove-bench",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "M0 corpus validator and deterministic baseline for background-removal parity"
 license = "MIT OR Apache-2.0"
 
-[dependencies]
+[workspace.dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive"] }
 image = "0.25.10"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.10.9"
-
-[dev-dependencies]
 tempfile = "3.23.0"

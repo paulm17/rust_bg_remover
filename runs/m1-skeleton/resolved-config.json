@@ -1,0 +1,20 @@
+{
+  "schema": "m1.pipeline.v1",
+  "segmenter": "noop",
+  "mask_transform": "identity",
+  "alpha_refiner": "noop",
+  "foreground_estimator": "original-rgb",
+  "geometry": {
+    "source_width": 512,
+    "source_height": 512,
+    "target_width": 512,
+    "target_height": 512,
+    "policy": {
+      "policy": "stretch"
+    },
+    "filter": "nearest"
+  },
+  "working_color_space": "srgb",
+  "output_mode": "straight-rgba",
+  "parameters": {}
+}

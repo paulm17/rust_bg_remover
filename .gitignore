@@ -2,6 +2,9 @@
 /runs/*
 !/runs/m0-baseline/
 !/runs/m0-baseline/report.json
+!/runs/m1-skeleton/
+!/runs/m1-skeleton/resolved-config.json
+!/runs/m1-skeleton/run.json
 /models/*.onnx
 /models/*.ort
 /corpus/inputs/

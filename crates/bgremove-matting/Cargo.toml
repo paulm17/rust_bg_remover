@@ -1,0 +1,10 @@
+[package]
+name = "bgremove-matting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "M1 trimap/refiner boundary; algorithms begin in M9/M10/M11/M12"
+
+[dependencies]
+bgremove-core = { path = "../bgremove-core" }
+anyhow.workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "bgremove-ort"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "M1 ONNX Runtime boundary; inference is intentionally deferred"
+
+[dependencies]
+bgremove-core = { path = "../bgremove-core" }

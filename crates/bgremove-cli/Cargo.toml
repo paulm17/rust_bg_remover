@@ -1,0 +1,21 @@
+[package]
+name = "bgremove-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "M1 background-removal command-line surfaces"
+
+[[bin]]
+name = "bgremove"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bgremove-core = { path = "../bgremove-core" }
+bgremove-color = { path = "../bgremove-color" }
+bgremove-matting = { path = "../bgremove-matting" }
+bgremove-models = { path = "../bgremove-models" }

@@ -1,9 +1,10 @@
-//! M0-only corpus and reference gate.
-//!
-//! This binary intentionally stops at corpus freezing and trivial alpha
-//! baselines. Typed inference/pipeline contracts belong to M1 and later.
+// M0 corpus validator and M1 benchmark implementation.
 
 use anyhow::{anyhow, bail, Context, Result};
+use bgremove_cli::load_canonical;
+use bgremove_color::OriginalRgbEstimator;
+use bgremove_core::{NoOpSegmenter, Pipeline, PipelineConfig};
+use bgremove_matting::IdentityMaskTransform;
 use clap::{Parser, Subcommand};
 use image::{GenericImageView, ImageDecoder, ImageReader};
 use serde::{Deserialize, Serialize};
@@ -18,9 +19,9 @@ const BASELINE_REPORT_VERSION: &str = "m0.baseline.v1";
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "bgremove-m0",
+    name = "bgremove-bench",
     version,
-    about = "M0 corpus validator and baseline"
+    about = "M0 regression and M1 benchmark harness"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -47,6 +48,20 @@ enum Command {
         manifest: PathBuf,
         #[arg(long, default_value = "runs/m0-baseline/report.json")]
         output: PathBuf,
+    },
+    /// Execute the deterministic M1 no-op pipeline and write a run artifact.
+    Run {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, default_value = "runs/m1-bench")]
+        output: PathBuf,
+    },
+    /// Compare two deterministic M1 artifact files byte-for-byte.
+    Compare {
+        #[arg(long)]
+        left: PathBuf,
+        #[arg(long)]
+        right: PathBuf,
     },
 }
 
@@ -266,6 +281,49 @@ fn main() -> Result<()> {
             write_baseline(&manifest, &output, &records)?;
             println!("wrote {}", output.display());
         }
+        Command::Run { input, output } => write_m1_run(&input, &output)?,
+        Command::Compare { left, right } => compare_m1_runs(&left, &right)?,
+    }
+    Ok(())
+}
+
+fn write_m1_run(input: &Path, output: &Path) -> Result<()> {
+    let image = load_canonical(input)?;
+    let (width, height) = image.dimensions();
+    let config = PipelineConfig::default().resolved_for(width, height)?;
+    let mut pipeline = Pipeline::new(
+        config.clone(),
+        Box::new(NoOpSegmenter),
+        Box::new(IdentityMaskTransform),
+        Box::new(bgremove_matting::NoOpRefiner::default()),
+        Box::new(OriginalRgbEstimator::default()),
+    );
+    let result = pipeline.run(&image, None)?;
+    fs::create_dir_all(output)?;
+    fs::write(
+        output.join("resolved-config.json"),
+        config.canonical_json()?,
+    )?;
+    let artifact = serde_json::json!({ "schema": "m1.bench-artifact.v1", "width": width, "height": height, "alpha_sum": result.alpha().data().iter().sum::<f32>(), "note": "M1 no-op pipeline" });
+    let mut bytes = serde_json::to_vec_pretty(&artifact)?;
+    bytes.push(b'\n');
+    fs::write(output.join("run.json"), bytes)?;
+    println!("wrote {}", output.display());
+    Ok(())
+}
+
+fn compare_m1_runs(left: &Path, right: &Path) -> Result<()> {
+    let a = fs::read(left).with_context(|| format!("read left artifact {}", left.display()))?;
+    let b = fs::read(right).with_context(|| format!("read right artifact {}", right.display()))?;
+    let equal = a == b;
+    println!(
+        "equal={} left_bytes={} right_bytes={}",
+        equal,
+        a.len(),
+        b.len()
+    );
+    if !equal {
+        bail!("M1 artifact bytes differ")
     }
     Ok(())
 }
@@ -1184,7 +1242,8 @@ mod tests {
     #[test]
     fn constant_baselines_are_deterministic_and_bounded() {
         let fixture: BaselineFixture =
-            serde_json::from_str(include_str!("../tests/fixtures/alpha-baseline.json")).unwrap();
+            serde_json::from_str(include_str!("../../../tests/fixtures/alpha-baseline.json"))
+                .unwrap();
         let zero = candidate_metrics(&fixture.reference_alpha, 0.0);
         let one = candidate_metrics(&fixture.reference_alpha, 1.0);
         assert!((zero.alpha_mae - fixture.all_zero_alpha_mae).abs() < f64::EPSILON);

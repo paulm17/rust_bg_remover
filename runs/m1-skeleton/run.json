@@ -1,0 +1,7 @@
+{
+  "alpha_sum": 0.0,
+  "height": 512,
+  "note": "M1 no-op pipeline",
+  "schema": "m1.bench-artifact.v1",
+  "width": 512
+}

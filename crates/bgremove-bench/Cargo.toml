@@ -1,0 +1,22 @@
+[package]
+name = "bgremove-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "M0 regression and M1 benchmark harness"
+
+[[bin]]
+name = "bgremove-bench"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+bgremove-core = { path = "../bgremove-core" }
+bgremove-color = { path = "../bgremove-color" }
+bgremove-matting = { path = "../bgremove-matting" }
+bgremove-cli = { path = "../bgremove-cli" }
