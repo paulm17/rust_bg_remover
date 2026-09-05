@@ -1,0 +1,752 @@
+{
+  "algorithm_family": "u2net",
+  "cloth_adapter": "U2netClothSegmenter (768 square, output 0 argmax class map)",
+  "cloth_policy": {
+    "excluded_from_general_scores": true,
+    "explicit_category_required": true,
+    "requested_category": null
+  },
+  "deterministic": true,
+  "domain_runs": [
+    {
+      "algorithm_family": "u2net",
+      "dimensions": [
+        1041,
+        1511
+      ],
+      "domain": "general",
+      "final_straight_alpha_cutout_rgba_sha256": "9ac75fbeb54f4fcd9857195ace3d28f34434b57445e38d4f05bbeef789f9bbec",
+      "manifest": "models/m5_u2net.toml",
+      "model_domain": "general",
+      "model_encoding": "fp32",
+      "model_sha256": "8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491",
+      "model_variant": "general",
+      "provider": {
+        "active": "CPUExecutionProvider",
+        "attempted_chain": [
+          "CPUExecutionProvider"
+        ],
+        "fallback_allowed": false,
+        "fallback_reason": null,
+        "fallback_used": false,
+        "requested": "cpu"
+      },
+      "raw_output_sha256": "39f56c26064cbb76cae509919072656d4777210bac051f256da162c5a3a1e2c9",
+      "restored_alpha_sha256": "d99353e4311ea7ebfc7ce2aaa62bfbc5575c6760d5e7df08e0da91ade99cf8ef",
+      "status": "pass",
+      "tensor_sha256": "fc041a895b8732cf21d85500449a6118e9de29f98e0d5f17f11bbe650c981559",
+      "variant": "general"
+    },
+    {
+      "algorithm_family": "u2net",
+      "dimensions": [
+        1041,
+        1511
+      ],
+      "domain": "light",
+      "final_straight_alpha_cutout_rgba_sha256": "87cba41c3e1fad9c5dde74999aa2889dfb91d9f7b9ab7f6531cd6e1f1872f5c4",
+      "manifest": "models/m5_u2netp.toml",
+      "model_domain": "general",
+      "model_encoding": "fp32",
+      "model_sha256": "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8",
+      "model_variant": "light",
+      "provider": {
+        "active": "CPUExecutionProvider",
+        "attempted_chain": [
+          "CPUExecutionProvider"
+        ],
+        "fallback_allowed": false,
+        "fallback_reason": null,
+        "fallback_used": false,
+        "requested": "cpu"
+      },
+      "raw_output_sha256": "92535b715dcc63d24819a7ae35896b034b5a250f0cf7b0a088935f57ac728abf",
+      "restored_alpha_sha256": "7568cef9c79f8b81d8c3367897b61c9f50bf87b75369064401ab06765c192e55",
+      "status": "pass",
+      "tensor_sha256": "fc041a895b8732cf21d85500449a6118e9de29f98e0d5f17f11bbe650c981559",
+      "variant": "light"
+    },
+    {
+      "algorithm_family": "u2net",
+      "dimensions": [
+        1041,
+        1511
+      ],
+      "domain": "human",
+      "final_straight_alpha_cutout_rgba_sha256": "789ee77b0fc710172e55d5eb1b4f2de47f0bfaa5262c70c570658abbc8a78673",
+      "manifest": "models/m5_u2net_human.toml",
+      "model_domain": "human",
+      "model_encoding": "fp32",
+      "model_sha256": "01eb6a29a5c4d8edb30b56adad9bb3a2a0535338e480724a213e0acfd2d1c73c",
+      "model_variant": "human-seg",
+      "provider": {
+        "active": "CPUExecutionProvider",
+        "attempted_chain": [
+          "CPUExecutionProvider"
+        ],
+        "fallback_allowed": false,
+        "fallback_reason": null,
+        "fallback_used": false,
+        "requested": "cpu"
+      },
+      "raw_output_sha256": "22d724ff72cd6163eb1f4bb90ccd71deb725264bfe619ccbbce93212ba125b53",
+      "restored_alpha_sha256": "91afd6cae83038a0ce756e7ce0027a37d40ff8381c8b9c2733d16087e2a657c0",
+      "status": "pass",
+      "tensor_sha256": "fc041a895b8732cf21d85500449a6118e9de29f98e0d5f17f11bbe650c981559",
+      "variant": "human"
+    },
+    {
+      "algorithm_family": "u2net",
+      "dimensions": [
+        1041,
+        1511
+      ],
+      "domain": "silueta",
+      "final_straight_alpha_cutout_rgba_sha256": "6f4ac53de01cf3777fedd18e277ddffd5b81f946e815e25cf30bf9473f7ff034",
+      "manifest": "models/m5_silueta.toml",
+      "model_domain": "general",
+      "model_encoding": "fp32",
+      "model_sha256": "75da6c8d2f8096ec743d071951be73b4a8bc7b3e51d9a6625d63644f90ffeedb",
+      "model_variant": "silueta",
+      "provider": {
+        "active": "CPUExecutionProvider",
+        "attempted_chain": [
+          "CPUExecutionProvider"
+        ],
+        "fallback_allowed": false,
+        "fallback_reason": null,
+        "fallback_used": false,
+        "requested": "cpu"
+      },
+      "raw_output_sha256": "0d3579c82abc17a47988b6f226a6d27c2962d6e1d98c102f6f8853f28200ecb6",
+      "restored_alpha_sha256": "5767768d0c91da947520b6a144ac37e0f8b868fff35b4c3bae2c498e444e8034",
+      "status": "pass",
+      "tensor_sha256": "fc041a895b8732cf21d85500449a6118e9de29f98e0d5f17f11bbe650c981559",
+      "variant": "silueta"
+    }
+  ],
+  "hard_threshold": {
+    "comparison": "strict greater-than",
+    "range_u8": [
+      0,
+      255
+    ]
+  },
+  "models": [
+    {
+      "algorithm_family": "u2net",
+      "available": true,
+      "id": "u2net@rembg-v0.0.0",
+      "input_name": "input.1",
+      "input_shape": [
+        1,
+        3,
+        320,
+        320
+      ],
+      "input_type": "f32",
+      "manifest_sha256": "2e3311e3f65b00a401c73b2081e817896e75175a0400cc479da9d32e9c2eb8bd",
+      "model_domain": "general",
+      "model_encoding": "fp32",
+      "model_sha256": "8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491",
+      "model_variant": "general",
+      "opset": 11,
+      "output_name": "1959",
+      "output_shape": [
+        1,
+        1,
+        320,
+        320
+      ],
+      "output_type": "f32"
+    },
+    {
+      "algorithm_family": "u2net",
+      "available": true,
+      "id": "u2net@rembg-v0.0.0-light",
+      "input_name": "input.1",
+      "input_shape": [
+        1,
+        3,
+        320,
+        320
+      ],
+      "input_type": "f32",
+      "manifest_sha256": "754e2f47fcd7d1b42a5d0c2af2e90b10f0b110caa3497e77bb8fba33f8cd4037",
+      "model_domain": "general",
+      "model_encoding": "fp32",
+      "model_sha256": "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8",
+      "model_variant": "light",
+      "opset": 11,
+      "output_name": "1959",
+      "output_shape": [
+        1,
+        1,
+        320,
+        320
+      ],
+      "output_type": "f32"
+    },
+    {
+      "algorithm_family": "u2net",
+      "available": true,
+      "id": "u2net@rembg-v0.0.0-human",
+      "input_name": "input.1",
+      "input_shape": [
+        1,
+        3,
+        320,
+        320
+      ],
+      "input_type": "f32",
+      "manifest_sha256": "7e57012d4e3ff95d6eae9d83a04b41a3cfd7ade9df18f95f953477d32374fb11",
+      "model_domain": "human",
+      "model_encoding": "fp32",
+      "model_sha256": "01eb6a29a5c4d8edb30b56adad9bb3a2a0535338e480724a213e0acfd2d1c73c",
+      "model_variant": "human-seg",
+      "opset": 11,
+      "output_name": "1959",
+      "output_shape": [
+        1,
+        1,
+        320,
+        320
+      ],
+      "output_type": "f32"
+    },
+    {
+      "algorithm_family": "u2net",
+      "available": true,
+      "id": "u2net@rembg-v0.0.0-silueta",
+      "input_name": "input.1",
+      "input_shape": [
+        1,
+        3,
+        320,
+        320
+      ],
+      "input_type": "f32",
+      "manifest_sha256": "def4710e2fe5243018a12f1cb634d47ad778e3c2ecd4e036d4d5b236ed8d1775",
+      "model_domain": "general",
+      "model_encoding": "fp32",
+      "model_sha256": "75da6c8d2f8096ec743d071951be73b4a8bc7b3e51d9a6625d63644f90ffeedb",
+      "model_variant": "silueta",
+      "opset": 11,
+      "output_name": "1959",
+      "output_shape": [
+        1,
+        1,
+        320,
+        320
+      ],
+      "output_type": "f32"
+    },
+    {
+      "algorithm_family": "u2net",
+      "available": true,
+      "id": "u2net@rembg-v0.0.0-cloth",
+      "input_name": "input",
+      "input_shape": [
+        "batch",
+        3,
+        768,
+        768
+      ],
+      "input_type": "f32",
+      "manifest_sha256": "7cd8d61a4872fc1a8a8e9e8b771e266f96b02e1f9bcf2f509a546391078e6eb6",
+      "model_domain": "cloth",
+      "model_encoding": "fp32",
+      "model_sha256": "6d2cbc27bfbdc989e1fd325656d65902ecc6a3ccbe94b2d3655ec114efcb128e",
+      "model_variant": "cloth-seg",
+      "opset": 11,
+      "output_name": "output",
+      "output_shape": [
+        "batch",
+        4,
+        768,
+        768
+      ],
+      "output_type": "f32"
+    }
+  ],
+  "output_contract": {
+    "cloth": "[1,4,768,768] logits, argmax to background/upper/lower/full, resize class IDs then equality",
+    "general": "first output index 0, direct mask, safe per-image min/max, uint8 Lanczos3 restore"
+  },
+  "preprocessing": {
+    "channel_order": "rgb",
+    "layout": "nchw",
+    "normalization": "global resized-image max with epsilon 1e-6, ImageNet mean/std",
+    "resize": "lanczos3",
+    "size": [
+      320,
+      320
+    ]
+  },
+  "provider": {
+    "active": "CPUExecutionProvider",
+    "attempted_chain": [
+      "CPUExecutionProvider"
+    ],
+    "fallback_allowed": false,
+    "fallback_reason": null,
+    "fallback_used": false,
+    "requested": "cpu"
+  },
+  "python_ort_parity": {
+    "models": {
+      "cloth": {
+        "inputs": [
+          "input"
+        ],
+        "outputs": [
+          "output",
+          "d1",
+          "onnx::Concat_1876",
+          "onnx::Concat_1896",
+          "onnx::Concat_1916",
+          "onnx::Concat_1936",
+          "onnx::Concat_1956"
+        ],
+        "path": "projects/python/rembg/u2net_cloth_seg.onnx",
+        "provider": [
+          "CPUExecutionProvider"
+        ],
+        "records": {
+          "landscape-3x2": {
+            "classes": [
+              0
+            ],
+            "raw_shape": [
+              1,
+              4,
+              768,
+              768
+            ],
+            "rust_parity": {
+              "full-mask.u8": {
+                "max_abs": 0,
+                "mismatch_count": 0
+              },
+              "lower-mask.u8": {
+                "max_abs": 0,
+                "mismatch_count": 0
+              },
+              "preprocessed-tensor.f32le": {
+                "max_abs": 4.76837158203125e-7,
+                "mean_abs": 7.496397813611112e-8
+              },
+              "raw-output.f32le": {
+                "max_abs": 0.0000476837158203125,
+                "mean_abs": 2.5973076844820753e-6
+              },
+              "restored-class-map.u8": {
+                "max_abs": 0,
+                "mismatch_count": 0
+              },
+              "upper-mask.u8": {
+                "max_abs": 0,
+                "mismatch_count": 0
+              },
+              "verdict": "pass"
+            }
+          },
+          "odd-5x3": {
+            "classes": [
+              0
+            ],
+            "raw_shape": [
+              1,
+              4,
+              768,
+              768
+            ],
+            "rust_parity": {
+              "full-mask.u8": {
+                "max_abs": 0,
+                "mismatch_count": 0
+              },
+              "lower-mask.u8": {
+                "max_abs": 0,
+                "mismatch_count": 0
+              },
+              "preprocessed-tensor.f32le": {
+                "max_abs": 4.76837158203125e-7,
+                "mean_abs": 6.87333283622138e-8
+              },
+              "raw-output.f32le": {
+                "max_abs": 0.00003814697265625,
+                "mean_abs": 2.3941431663843105e-6
+              },
+              "restored-class-map.u8": {
+                "max_abs": 0,
+                "mismatch_count": 0
+              },
+              "upper-mask.u8": {
+                "max_abs": 0,
+                "mismatch_count": 0
+              },
+              "verdict": "pass"
+            }
+          },
+          "portrait-2x3": {
+            "classes": [
+              0
+            ],
+            "raw_shape": [
+              1,
+              4,
+              768,
+              768
+            ],
+            "rust_parity": {
+              "full-mask.u8": {
+                "max_abs": 0,
+                "mismatch_count": 0
+              },
+              "lower-mask.u8": {
+                "max_abs": 0,
+                "mismatch_count": 0
+              },
+              "preprocessed-tensor.f32le": {
+                "max_abs": 4.76837158203125e-7,
+                "mean_abs": 7.84867282277446e-8
+              },
+              "raw-output.f32le": {
+                "max_abs": 0.00003910064697265625,
+                "mean_abs": 2.116836412824341e-6
+              },
+              "restored-class-map.u8": {
+                "max_abs": 0,
+                "mismatch_count": 0
+              },
+              "upper-mask.u8": {
+                "max_abs": 0,
+                "mismatch_count": 0
+              },
+              "verdict": "pass"
+            }
+          }
+        },
+        "sha256": "6d2cbc27bfbdc989e1fd325656d65902ecc6a3ccbe94b2d3655ec114efcb128e"
+      },
+      "general": {
+        "inputs": [
+          "input.1"
+        ],
+        "outputs": [
+          "1959",
+          "1960",
+          "1961",
+          "1962",
+          "1963",
+          "1964",
+          "1965"
+        ],
+        "path": "projects/python/rembg/u2net.onnx",
+        "provider": [
+          "CPUExecutionProvider"
+        ],
+        "records": {
+          "landscape-3x2": {
+            "raw_max": 0.01091054081916809,
+            "raw_min": 0.0,
+            "raw_shape": [
+              1,
+              320,
+              320
+            ]
+          },
+          "odd-5x3": {
+            "raw_max": 0.018074780702590942,
+            "raw_min": 0.0,
+            "raw_shape": [
+              1,
+              320,
+              320
+            ]
+          },
+          "portrait-2x3": {
+            "raw_max": 0.007684677839279175,
+            "raw_min": 0.0,
+            "raw_shape": [
+              1,
+              320,
+              320
+            ]
+          }
+        },
+        "sha256": "8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491"
+      },
+      "human": {
+        "inputs": [
+          "input.1"
+        ],
+        "outputs": [
+          "1959",
+          "1960",
+          "1961",
+          "1962",
+          "1963",
+          "1964",
+          "1965"
+        ],
+        "path": "projects/python/rembg/u2net_human_seg.onnx",
+        "provider": [
+          "CPUExecutionProvider"
+        ],
+        "records": {
+          "landscape-3x2": {
+            "raw_max": 0.0005224645137786865,
+            "raw_min": 0.0,
+            "raw_shape": [
+              1,
+              320,
+              320
+            ]
+          },
+          "odd-5x3": {
+            "raw_max": 0.012744754552841188,
+            "raw_min": 0.0,
+            "raw_shape": [
+              1,
+              320,
+              320
+            ]
+          },
+          "portrait-2x3": {
+            "raw_max": 0.0000928342342376709,
+            "raw_min": 0.0,
+            "raw_shape": [
+              1,
+              320,
+              320
+            ]
+          }
+        },
+        "sha256": "01eb6a29a5c4d8edb30b56adad9bb3a2a0535338e480724a213e0acfd2d1c73c"
+      },
+      "light": {
+        "inputs": [
+          "input.1"
+        ],
+        "outputs": [
+          "1959",
+          "1960",
+          "1961",
+          "1962",
+          "1963",
+          "1964",
+          "1965"
+        ],
+        "path": "projects/python/rembg/u2netp.onnx",
+        "provider": [
+          "CPUExecutionProvider"
+        ],
+        "records": {
+          "landscape-3x2": {
+            "raw_max": 0.006000041961669922,
+            "raw_min": 3.993511199951172e-6,
+            "raw_shape": [
+              1,
+              320,
+              320
+            ],
+            "rust_parity": {
+              "final-straight-alpha-cutout.rgba": {
+                "byte_length_equal": true,
+                "byte_mismatch_count": 0
+              },
+              "preprocessed-tensor.f32le": {
+                "max_abs": 4.76837158203125e-7,
+                "mean_abs": 7.489397546578402e-8
+              },
+              "raw-output.f32le": {
+                "max_abs": 3.576278686523438e-7,
+                "mean_abs": 2.9338115936639042e-8
+              },
+              "restored-alpha.f32le": {
+                "max_abs": 0.0,
+                "mean_abs": 0.0
+              },
+              "verdict": "pass"
+            }
+          },
+          "odd-5x3": {
+            "raw_max": 0.9999465942382812,
+            "raw_min": 5.453824996948242e-6,
+            "raw_shape": [
+              1,
+              320,
+              320
+            ],
+            "rust_parity": {
+              "final-straight-alpha-cutout.rgba": {
+                "byte_length_equal": true,
+                "byte_mismatch_count": 0
+              },
+              "preprocessed-tensor.f32le": {
+                "max_abs": 4.76837158203125e-7,
+                "mean_abs": 6.879552216787489e-8
+              },
+              "raw-output.f32le": {
+                "max_abs": 8.910894393920898e-6,
+                "mean_abs": 2.764206215033483e-7
+              },
+              "restored-alpha.f32le": {
+                "max_abs": 0.0,
+                "mean_abs": 0.0
+              },
+              "verdict": "pass"
+            }
+          },
+          "portrait-2x3": {
+            "raw_max": 0.01425442099571228,
+            "raw_min": 7.152557373046875e-7,
+            "raw_shape": [
+              1,
+              320,
+              320
+            ],
+            "rust_parity": {
+              "final-straight-alpha-cutout.rgba": {
+                "byte_length_equal": true,
+                "byte_mismatch_count": 0
+              },
+              "preprocessed-tensor.f32le": {
+                "max_abs": 4.76837158203125e-7,
+                "mean_abs": 7.865378393034916e-8
+              },
+              "raw-output.f32le": {
+                "max_abs": 4.470348358154297e-7,
+                "mean_abs": 2.9784278154920685e-8
+              },
+              "restored-alpha.f32le": {
+                "max_abs": 0.0,
+                "mean_abs": 0.0
+              },
+              "verdict": "pass"
+            }
+          }
+        },
+        "sha256": "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8"
+      },
+      "silueta": {
+        "inputs": [
+          "input.1"
+        ],
+        "outputs": [
+          "1959",
+          "1960",
+          "1961",
+          "1962",
+          "1963",
+          "1964",
+          "1965"
+        ],
+        "path": "projects/python/rembg/silueta.onnx",
+        "provider": [
+          "CPUExecutionProvider"
+        ],
+        "records": {
+          "landscape-3x2": {
+            "raw_max": 0.010920852422714232,
+            "raw_min": 0.0,
+            "raw_shape": [
+              1,
+              320,
+              320
+            ]
+          },
+          "odd-5x3": {
+            "raw_max": 0.10233911871910097,
+            "raw_min": 0.0,
+            "raw_shape": [
+              1,
+              320,
+              320
+            ]
+          },
+          "portrait-2x3": {
+            "raw_max": 0.0039483606815338135,
+            "raw_min": 0.0,
+            "raw_shape": [
+              1,
+              320,
+              320
+            ]
+          }
+        },
+        "sha256": "75da6c8d2f8096ec743d071951be73b4a8bc7b3e51d9a6625d63644f90ffeedb"
+      }
+    },
+    "python": {
+      "numpy": "1.26.4",
+      "onnxruntime": "1.23.2",
+      "pillow": "10.4.0",
+      "providers": [
+        "CPUExecutionProvider"
+      ]
+    },
+    "schema": "m5.python-ort-level2.v1",
+    "source": "rembg/BaseSession.normalize and session.predict@030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+    "tolerances": {
+      "cloth_raw_logits_max_abs": 0.0001,
+      "cloth_raw_logits_mean_abs": 3e-6,
+      "cutout_byte_mismatches": 0,
+      "preprocessed_tensor_max_abs": 1e-6,
+      "preprocessed_tensor_mean_abs": 1e-7,
+      "raw_output_mean_abs": 1e-6,
+      "restored_alpha_u8_max_abs": 0,
+      "single_mask_raw_output_max_abs": 0.00001
+    }
+  },
+  "runtime_run": {
+    "decoded_rgb_sha256": "85e77b1b06d23eab2fc4deba318b626fd3446bf7e0d1885d5b572c01f0a6386f",
+    "dimensions": [
+      1041,
+      1511
+    ],
+    "final_straight_alpha_cutout_png_sha256": "7193f7ef050f49252037923dfd3820e5bbfe9b4ff8ae5020c52a6ce93e21f4c2",
+    "final_straight_alpha_cutout_rgba_sha256": "9ac75fbeb54f4fcd9857195ace3d28f34434b57445e38d4f05bbeef789f9bbec",
+    "input": "test_images/photoroom/1.png",
+    "provider": {
+      "active": "CPUExecutionProvider",
+      "attempted_chain": [
+        "CPUExecutionProvider"
+      ],
+      "fallback_allowed": false,
+      "fallback_reason": null,
+      "fallback_used": false,
+      "requested": "cpu"
+    },
+    "raw_output_sha256": "39f56c26064cbb76cae509919072656d4777210bac051f256da162c5a3a1e2c9",
+    "restored_alpha_sha256": "d99353e4311ea7ebfc7ce2aaa62bfbc5575c6760d5e7df08e0da91ade99cf8ef",
+    "status": "pass",
+    "tensor_sha256": "fc041a895b8732cf21d85500449a6118e9de29f98e0d5f17f11bbe650c981559"
+  },
+  "schema": "m5.u2net-smoke.v1",
+  "selected_domain": "general",
+  "selected_encoding": "fp32",
+  "selected_manifest": "u2net@rembg-v0.0.0",
+  "selected_variant": "general",
+  "shared_adapter": "U2netSegmenter (general/light/human/Silueta)",
+  "tolerances": {
+    "cloth_raw_logits_max_abs": 0.0001,
+    "cloth_raw_logits_mean_abs": 3e-6,
+    "input_tensor_max_abs": 1e-6,
+    "input_tensor_mean_abs": 1e-7,
+    "restored_mask_u8_max_abs": 0,
+    "single_mask_raw_output_max_abs": 0.00001
+  },
+  "unit_fixture": {
+    "decoded_rgb_sha256": "124bbcbf2f1642bd24c6c71d791dd4b38d156e6f60c2f5bce62dab08b48bf12d",
+    "preprocessed_tensor_sha256": "e25ab5b0a8463360bd23449b2fd1ae352d43c3d819305b66354a5c1f268288cf",
+    "preprocessed_tensor_shape": [
+      1,
+      3,
+      320,
+      320
+    ]
+  }
+}

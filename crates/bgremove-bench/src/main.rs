@@ -14,6 +14,31 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+fn straight_rgba_bytes(result: &bgremove_core::Foreground) -> Vec<u8> {
+    result
+        .rgb()
+        .data()
+        .iter()
+        .zip(result.alpha().data())
+        .flat_map(|(rgb, alpha)| {
+            let mut pixel = [0u8; 4];
+            for channel in 0..3 {
+                pixel[channel] = if rgb[channel].is_finite() {
+                    (rgb[channel].clamp(0.0, 1.0) * 255.0).round() as u8
+                } else {
+                    0
+                };
+            }
+            pixel[3] = if alpha.is_finite() {
+                (alpha.clamp(0.0, 1.0) * 255.0).round() as u8
+            } else {
+                0
+            };
+            pixel
+        })
+        .collect()
+}
+
 const SCHEMA_VERSION: &str = "m0.corpus.v1";
 const BASELINE_REPORT_VERSION: &str = "m0.baseline.v1";
 
@@ -86,6 +111,22 @@ enum Command {
         #[arg(long, default_value = "cpu")]
         provider: String,
         #[arg(long, default_value = "runs/m4-isnet")]
+        output: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        workers: usize,
+    },
+    /// Run the deterministic M5 U2-Net family report. Runtime inference is
+    /// performed only when an explicit input and ORT_DYLIB are supplied.
+    M5Smoke {
+        #[arg(long)]
+        input: Option<PathBuf>,
+        #[arg(long, default_value = "models/m5_u2net.toml")]
+        manifest: PathBuf,
+        #[arg(long)]
+        category: Option<String>,
+        #[arg(long, default_value = "cpu")]
+        provider: String,
+        #[arg(long, default_value = "runs/m5-u2net")]
         output: PathBuf,
         #[arg(long, default_value_t = 1)]
         workers: usize,
@@ -334,6 +375,21 @@ fn main() -> Result<()> {
             &provider,
             workers,
         )?,
+        Command::M5Smoke {
+            input,
+            manifest,
+            category,
+            provider,
+            output,
+            workers,
+        } => write_m5_smoke(
+            &output,
+            input.as_deref(),
+            &manifest,
+            category.as_deref(),
+            &provider,
+            workers,
+        )?,
     }
     Ok(())
 }
@@ -496,6 +552,285 @@ fn write_m4_smoke(
         "provider": runtime_run.get("provider").cloned().unwrap_or(serde_json::json!({"requested":provider_name,"active":"not-run"})),
         "runtime_run": runtime_run,
         "deterministic": true
+    });
+    let mut bytes = serde_json::to_vec_pretty(&report)?;
+    bytes.push(b'\n');
+    fs::write(output.join("report.json"), bytes)?;
+    println!("wrote {}", output.display());
+    Ok(())
+}
+
+fn write_m5_smoke(
+    output: &Path,
+    input: Option<&Path>,
+    manifest_path: &Path,
+    category: Option<&str>,
+    provider_name: &str,
+    workers: usize,
+) -> Result<()> {
+    let manifest = bgremove_models::parse_toml(&fs::read_to_string(manifest_path)?)?;
+    ensure!(
+        manifest.algorithm_family == "u2net",
+        "M5 smoke requires a U2-Net manifest"
+    );
+    ensure!(
+        category.is_none() || manifest.model_domain == "cloth",
+        "cloth category is valid only with the cloth domain manifest"
+    );
+    if manifest.model_domain == "cloth" {
+        ensure!(
+            category.is_some(),
+            "cloth smoke requires explicit upper, lower, or full category"
+        );
+    }
+    let requested = match provider_name {
+        "cpu" => bgremove_ort::RequestedProvider::Cpu,
+        "coreml" => bgremove_ort::RequestedProvider::Coreml,
+        "cuda" => bgremove_ort::RequestedProvider::Cuda,
+        other => bail!("unknown provider {other}; expected cpu, coreml, or cuda"),
+    };
+    if let Some(value) = category {
+        ensure!(
+            ["upper", "lower", "full"].contains(&value),
+            "invalid cloth category {value}"
+        );
+    }
+    let hash_bytes = |bytes: &[u8]| {
+        let mut h = Sha256::new();
+        h.update(bytes);
+        h.finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let hash_f32 = |values: &[f32]| {
+        let mut h = Sha256::new();
+        for value in values {
+            h.update(value.to_le_bytes());
+        }
+        h.finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let family_paths = [
+        "models/m5_u2net.toml",
+        "models/m5_u2netp.toml",
+        "models/m5_u2net_human.toml",
+        "models/m5_silueta.toml",
+        "models/m5_u2net_cloth.toml",
+    ];
+    let models = family_paths.into_iter().map(|path| {
+        let text = fs::read_to_string(path)?;
+        let m = bgremove_models::parse_toml(&text)?;
+        Ok::<_, anyhow::Error>(serde_json::json!({
+            "id":m.id, "algorithm_family":m.algorithm_family, "model_variant":m.model_variant,
+            "model_domain":m.model_domain, "model_encoding":m.model_encoding,
+            "input_name":m.input_name, "output_name":m.output_name, "input_shape":m.input_shape,
+            "output_shape":m.output_shape, "input_type":m.input_type, "output_type":m.output_type,
+            "opset":m.opset, "model_sha256":m.sha256, "manifest_sha256":hash_bytes(text.as_bytes()),
+            "available":m.verify_model_hash(Path::new(path)).is_ok()
+        }))
+    }).collect::<Result<Vec<_>>>()?;
+    let rgb = bgremove_core::RgbImageF32::new(
+        3,
+        2,
+        vec![
+            [0.0, 0.25, 1.0],
+            [1.0, 0.5, 0.0],
+            [0.2, 0.4, 0.6],
+            [0.9, 0.1, 0.3],
+            [0.7, 0.8, 0.05],
+            [1.0, 1.0, 1.0],
+        ],
+    )?;
+    let fixture = bgremove_core::CanonicalImage::from_rgb(rgb);
+    let tensor = bgremove_ort::u2net_preprocess_rgb(&fixture, manifest.width, manifest.height)?;
+    let decoded = fixture
+        .rgb()
+        .data()
+        .iter()
+        .flat_map(|px| px.iter().copied())
+        .collect::<Vec<_>>();
+    let mut runtime_run = serde_json::json!({
+        "status":"fixture-only", "decoded_rgb_sha256":null,
+        "preprocessed_tensor_sha256":null, "raw_output_sha256":null,
+        "restored_alpha_sha256":null, "restored_class_map_sha256":null,
+        "final_straight_alpha_cutout_sha256":null,
+        "note":"Set ORT_DYLIB and provide an external verified checkpoint for real inference; inference never downloads models"
+    });
+    if let Some(input_path) = input {
+        let runtime = std::env::var_os("ORT_DYLIB")
+            .ok_or_else(|| anyhow!("ORT_DYLIB is required for runtime M5 smoke"))?;
+        let image = load_canonical(input_path)?;
+        if manifest.model_domain == "cloth" {
+            let segmenter = bgremove_ort::U2netClothSegmenter::new(
+                &manifest,
+                manifest_path,
+                Path::new(&runtime),
+                workers,
+                requested,
+                false,
+            )?;
+            let evidence = segmenter.predict_with_evidence(&image)?;
+            let cloth_category = bgremove_ort::ClothCategory::parse(category.unwrap())?;
+            let categories = segmenter.predict_categories(&image, None)?;
+            let mask = categories
+                .iter()
+                .find(|(candidate, _)| *candidate == cloth_category)
+                .map(|(_, mask)| mask.clone())
+                .ok_or_else(|| anyhow!("requested cloth category missing"))?;
+            let cutout = bgremove_ort::isnet_straight_cutout(&image, mask)?;
+            let cutout_rgba = straight_rgba_bytes(&cutout);
+            let cutout_png = encode_straight_rgba_png(&cutout)?;
+            if let Some(dir) = std::env::var_os("M5_ARTIFACT_DIR") {
+                let dir = PathBuf::from(dir);
+                fs::create_dir_all(&dir)?;
+                let f32_bytes = |values: &[f32]| {
+                    values
+                        .iter()
+                        .flat_map(|v| v.to_le_bytes())
+                        .collect::<Vec<_>>()
+                };
+                fs::write(
+                    dir.join("preprocessed-tensor.f32le"),
+                    f32_bytes(&evidence.tensor.values),
+                )?;
+                fs::write(
+                    dir.join("raw-output.f32le"),
+                    f32_bytes(&evidence.raw_output.values),
+                )?;
+                fs::write(
+                    dir.join("restored-class-map.u8"),
+                    &evidence.restored_class_map,
+                )?;
+                for (candidate, _candidate_mask) in &categories {
+                    let bytes = bgremove_ort::cloth_category_mask_u8(
+                        &evidence.restored_class_map,
+                        *candidate,
+                    );
+                    fs::write(dir.join(format!("{}-mask.u8", candidate.as_str())), bytes)?;
+                }
+                fs::write(dir.join("final-straight-alpha-cutout.rgba"), &cutout_rgba)?;
+                fs::write(dir.join("final-straight-alpha-cutout.png"), &cutout_png)?;
+            }
+            runtime_run = serde_json::json!({"status":"pass", "input":input_path.display().to_string(), "category":cloth_category.as_str(), "dimensions":[image.width(),image.height()], "decoded_rgb_sha256":hash_f32(&image.rgb().data().iter().flat_map(|px| px.iter().copied()).collect::<Vec<_>>()), "tensor_sha256":hash_f32(&evidence.tensor.values), "raw_output_sha256":hash_f32(&evidence.raw_output.values), "restored_class_map_sha256":hash_bytes(&evidence.restored_class_map), "final_straight_alpha_cutout_rgba_sha256":hash_bytes(&cutout_rgba), "final_straight_alpha_cutout_png_sha256":hash_bytes(&cutout_png), "provider":segmenter.provider()});
+        } else {
+            let segmenter = bgremove_ort::U2netSegmenter::new(
+                &manifest,
+                manifest_path,
+                Path::new(&runtime),
+                workers,
+                requested,
+                false,
+            )?;
+            let evidence = segmenter.predict_with_evidence(&image)?;
+            let cutout = bgremove_ort::isnet_straight_cutout(&image, evidence.restored.clone())?;
+            let cutout_rgba = straight_rgba_bytes(&cutout);
+            let cutout_png = encode_straight_rgba_png(&cutout)?;
+            if let Some(dir) = std::env::var_os("M5_ARTIFACT_DIR") {
+                let dir = PathBuf::from(dir);
+                fs::create_dir_all(&dir)?;
+                let rgb = image
+                    .rgb()
+                    .data()
+                    .iter()
+                    .flat_map(|px| px.iter().copied())
+                    .collect::<Vec<_>>();
+                let f32_bytes = |values: &[f32]| {
+                    values
+                        .iter()
+                        .flat_map(|v| v.to_le_bytes())
+                        .collect::<Vec<_>>()
+                };
+                fs::write(dir.join("decoded-rgb.f32le"), f32_bytes(&rgb))?;
+                fs::write(
+                    dir.join("preprocessed-tensor.f32le"),
+                    f32_bytes(&evidence.tensor.values),
+                )?;
+                fs::write(
+                    dir.join("raw-output.f32le"),
+                    f32_bytes(&evidence.raw_output.values),
+                )?;
+                fs::write(
+                    dir.join("restored-alpha.f32le"),
+                    f32_bytes(evidence.restored.data()),
+                )?;
+                fs::write(dir.join("final-straight-alpha-cutout.rgba"), &cutout_rgba)?;
+                fs::write(
+                    dir.join("final-straight-alpha-cutout.png"),
+                    encode_straight_rgba_png(&cutout)?,
+                )?;
+            }
+            runtime_run = serde_json::json!({"status":"pass", "input":input_path.display().to_string(), "dimensions":[image.width(),image.height()], "decoded_rgb_sha256":hash_f32(&image.rgb().data().iter().flat_map(|px| px.iter().copied()).collect::<Vec<_>>()), "tensor_sha256":hash_f32(&evidence.tensor.values), "raw_output_sha256":hash_f32(&evidence.raw_output.values), "restored_alpha_sha256":hash_f32(evidence.restored.data()), "final_straight_alpha_cutout_rgba_sha256":hash_bytes(&cutout_rgba), "final_straight_alpha_cutout_png_sha256":hash_bytes(&cutout_png), "provider":segmenter.provider()});
+        }
+    }
+    let domain_runs = if let Some(input_path) = input {
+        let image = load_canonical(input_path)?;
+        [
+            ("general", "models/m5_u2net.toml"),
+            ("light", "models/m5_u2netp.toml"),
+            ("human", "models/m5_u2net_human.toml"),
+            ("silueta", "models/m5_silueta.toml"),
+        ]
+        .into_iter()
+        .map(|(domain, path)| {
+            let selected = bgremove_models::parse_toml(&fs::read_to_string(path)?)?;
+            let segmenter = bgremove_ort::U2netSegmenter::new(
+                &selected,
+                Path::new(path),
+                Path::new(
+                    &std::env::var_os("ORT_DYLIB")
+                        .ok_or_else(|| anyhow!("ORT_DYLIB is required for domain smoke"))?,
+                ),
+                workers,
+                requested,
+                false,
+            )?;
+            let evidence = segmenter.predict_with_evidence(&image)?;
+            let cutout = bgremove_ort::isnet_straight_cutout(&image, evidence.restored.clone())?;
+            let cutout_rgba = straight_rgba_bytes(&cutout);
+            Ok::<_, anyhow::Error>(serde_json::json!({
+                "domain": domain,
+                "variant": domain,
+                "manifest": path,
+                "model_variant": selected.model_variant,
+                "model_domain": selected.model_domain,
+                "model_encoding": selected.model_encoding,
+                "algorithm_family": selected.algorithm_family,
+                "model_sha256": selected.sha256,
+                "status": "pass",
+                "dimensions": [image.width(), image.height()],
+                "tensor_sha256": hash_f32(&evidence.tensor.values),
+                "raw_output_sha256": hash_f32(&evidence.raw_output.values),
+                "restored_alpha_sha256": hash_f32(evidence.restored.data()),
+                "final_straight_alpha_cutout_rgba_sha256": hash_bytes(&cutout_rgba),
+                "provider": segmenter.provider(),
+            }))
+        })
+        .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    let python_ort_parity = serde_json::from_str::<serde_json::Value>(&fs::read_to_string(
+        "tests/fixtures/m5/python-ort-parity.json",
+    )?)?;
+    fs::create_dir_all(output)?;
+    let report = serde_json::json!({
+        "schema":"m5.u2net-smoke.v1", "algorithm_family":"u2net",
+        "shared_adapter":"U2netSegmenter (general/light/human/Silueta)",
+        "cloth_adapter":"U2netClothSegmenter (768 square, output 0 argmax class map)",
+        "models":models, "selected_manifest":manifest.id, "selected_variant":manifest.model_variant,
+        "selected_domain":manifest.model_domain, "selected_encoding":manifest.model_encoding,
+        "preprocessing":{"channel_order":"rgb","layout":"nchw","resize":"lanczos3","size":[manifest.width,manifest.height],"normalization":"global resized-image max with epsilon 1e-6, ImageNet mean/std"},
+        "output_contract":{"general":"first output index 0, direct mask, safe per-image min/max, uint8 Lanczos3 restore","cloth":"[1,4,768,768] logits, argmax to background/upper/lower/full, resize class IDs then equality"},
+        "hard_threshold":{"comparison":"strict greater-than","range_u8":[0,255]},
+        "tolerances":{"input_tensor_max_abs":1e-6,"input_tensor_mean_abs":1e-7,"single_mask_raw_output_max_abs":1e-5,"cloth_raw_logits_max_abs":1e-4,"cloth_raw_logits_mean_abs":3e-6,"restored_mask_u8_max_abs":0},
+        "cloth_policy":{"excluded_from_general_scores":true,"explicit_category_required":true,"requested_category":category},
+        "unit_fixture":{"decoded_rgb_sha256":hash_f32(&decoded),"preprocessed_tensor_sha256":hash_f32(&tensor.values),"preprocessed_tensor_shape":tensor.shape},
+        "provider":runtime_run.get("provider").cloned().unwrap_or(serde_json::json!({"requested":provider_name,"active":"not-run"})),
+        "python_ort_parity":python_ort_parity,
+        "domain_runs":domain_runs, "runtime_run":runtime_run, "deterministic":true
     });
     let mut bytes = serde_json::to_vec_pretty(&report)?;
     bytes.push(b'\n');

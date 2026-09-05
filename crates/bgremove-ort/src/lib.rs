@@ -64,9 +64,8 @@ pub fn resize_u8_bilinear_js(
     Ok(out)
 }
 
-/// Deterministic Lanczos3 path used by rembg's PIL LANCZOS profile. RGB and
-/// single-channel masks are supported; callers retain the explicit profile
-/// name because PIL/image-crate kernels are not interchangeable silently.
+/// M4's established image-crate Lanczos3 path. Keep this function stable:
+/// M4's reports and contracts intentionally record image-crate behaviour.
 pub fn resize_u8_lanczos(
     src: &[u8],
     src_width: u32,
@@ -104,6 +103,111 @@ pub fn resize_u8_lanczos(
         )
         .into_raw())
     }
+}
+
+/// Exact Pillow 10.4 LANCZOS 8-bit path used by rembg's U2-Net sessions.
+/// This is deliberately separate from M4's image-crate compatibility helper.
+pub fn resize_u8_pillow_lanczos(
+    src: &[u8],
+    src_width: u32,
+    src_height: u32,
+    channels: usize,
+    dst_width: u32,
+    dst_height: u32,
+) -> Result<Vec<u8>> {
+    ensure!(
+        channels == 1 || channels == 3,
+        "Pillow Lanczos resize supports one or three channels"
+    );
+    ensure!(
+        src.len() == src_width as usize * src_height as usize * channels,
+        "Pillow Lanczos source length mismatch"
+    );
+    // Compact port of Pillow 10.4's Resample.c 8-bit path: center=(x+.5)*scale,
+    // support=3*max(scale,1), normalized coefficients quantized to 22
+    // fractional bits, and an 8-bit clipped intermediate between passes.
+    const PRECISION: i64 = 1 << 22;
+    fn sinc(x: f64) -> f64 {
+        if x == 0.0 {
+            1.0
+        } else {
+            (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
+        }
+    }
+    fn coefficients(input: usize, output: usize) -> Vec<(usize, Vec<i64>)> {
+        let scale = input as f64 / output as f64;
+        let filterscale = scale.max(1.0);
+        let support = 3.0 * filterscale;
+        (0..output)
+            .map(|xx| {
+                let center = (xx as f64 + 0.5) * scale;
+                let mut xmin = (center - support + 0.5) as i32;
+                xmin = xmin.max(0);
+                let mut xmax = (center + support + 0.5) as i32;
+                xmax = xmax.min(input as i32);
+                let count = (xmax - xmin).max(0) as usize;
+                let mut weights = Vec::with_capacity(count);
+                let mut sum = 0.0;
+                for x in 0..count {
+                    let u = (x as f64 + xmin as f64 - center + 0.5) / filterscale;
+                    let weight = if (-3.0..3.0).contains(&u) {
+                        sinc(u) * sinc(u / 3.0)
+                    } else {
+                        0.0
+                    };
+                    weights.push(weight);
+                    sum += weight;
+                }
+                let fixed = weights
+                    .into_iter()
+                    .map(|weight| {
+                        let value = if sum != 0.0 {
+                            weight / sum * PRECISION as f64
+                        } else {
+                            0.0
+                        };
+                        if value < 0.0 {
+                            (value - 0.5) as i64
+                        } else {
+                            (value + 0.5) as i64
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                (xmin as usize, fixed)
+            })
+            .collect::<Vec<_>>()
+    }
+    fn clip(sum: i64) -> u8 {
+        ((sum >> 22).clamp(0, 255)) as u8
+    }
+    let hcoeff = coefficients(src_width as usize, dst_width as usize);
+    let vcoeff = coefficients(src_height as usize, dst_height as usize);
+    let mut horizontal = vec![0u8; dst_width as usize * src_height as usize * channels];
+    for y in 0..src_height as usize {
+        for (x, (start, weights)) in hcoeff.iter().enumerate() {
+            for c in 0..channels {
+                let mut sum = PRECISION / 2;
+                for (k, weight) in weights.iter().enumerate() {
+                    sum += src[(y * src_width as usize + start + k) * channels + c] as i64 * weight;
+                }
+                horizontal[(y * dst_width as usize + x) * channels + c] = clip(sum);
+            }
+        }
+    }
+    let mut out = vec![0u8; dst_width as usize * dst_height as usize * channels];
+    for (y, (start, weights)) in vcoeff.iter().enumerate() {
+        for x in 0..dst_width as usize {
+            for c in 0..channels {
+                let mut sum = PRECISION / 2;
+                for (k, weight) in weights.iter().enumerate() {
+                    sum += horizontal[((start + k) * dst_width as usize + x) * channels + c] as i64
+                        * weight;
+                }
+                out[(y * dst_width as usize + x) * channels + c] = clip(sum);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Convert a canonical encoded RGB image to the exact 1024x1024 IMG.LY input
@@ -1218,6 +1322,504 @@ pub fn apply_output_transform(
     );
     Ok(t)
 }
+
+/// Exact shared rembg U2-Net preprocessing contract.  `BaseSession.normalize`
+/// first converts to RGB, resizes with Pillow LANCZOS, divides by the global
+/// resized-image maximum (with an epsilon guard), applies ImageNet mean/std,
+/// and finally transposes HWC to NCHW.
+pub fn u2net_preprocess_rgb(
+    image: &bgremove_core::CanonicalImage,
+    width: u32,
+    height: u32,
+) -> Result<TensorInput> {
+    ensure!(
+        width > 0 && height > 0,
+        "U2-Net input dimensions must be positive"
+    );
+    let (w, h) = image.dimensions();
+    let mut bytes = Vec::with_capacity((w as usize) * (h as usize) * 3);
+    for px in image.rgb().data() {
+        for value in px {
+            bytes.push((value.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8);
+        }
+    }
+    let resized = resize_u8_pillow_lanczos(&bytes, w, h, 3, width, height)?;
+    let max_value = resized.iter().copied().max().unwrap_or(0) as f32;
+    let denominator = max_value.max(1e-6);
+    let means = [0.485f32, 0.456, 0.406];
+    let stds = [0.229f32, 0.224, 0.225];
+    let plane = (width as usize) * (height as usize);
+    let mut values = vec![0.0; 3 * plane];
+    for i in 0..plane {
+        for c in 0..3 {
+            let normalized = resized[i * 3 + c] as f32 / denominator;
+            values[c * plane + i] = (normalized - means[c]) / stds[c];
+        }
+    }
+    Ok(TensorInput {
+        shape: vec![1, 3, height as i64, width as i64],
+        values,
+    })
+}
+
+fn first_output_mask(
+    output: &TensorOutput,
+    width: u32,
+    height: u32,
+    model_id: &str,
+) -> Result<Vec<f32>> {
+    let expected = (width as usize) * (height as usize);
+    let values = match output.shape.as_slice() {
+        [1, 1, h, w] if *h == height as i64 && *w == width as i64 => &output.values,
+        [1, h, w] if *h == height as i64 && *w == width as i64 => &output.values,
+        [h, w] if *h == height as i64 && *w == width as i64 => &output.values,
+        other => {
+            bail!("model {model_id} first output shape {other:?} is not [1,1,{height},{width}]")
+        }
+    };
+    ensure!(
+        values.len() == expected,
+        "model {model_id} first output value count mismatch"
+    );
+    ensure!(
+        values.iter().all(|v| v.is_finite()),
+        "model {model_id} first output contains NaN/Inf"
+    );
+    Ok(values.to_vec())
+}
+
+/// Restore a rembg U2-Net mask: direct first-output values are safely
+/// normalized, quantized to uint8 as PIL does, and then resized by Lanczos to
+/// the exact canonical source dimensions.
+pub fn restore_u2net_mask(
+    raw: &[f32],
+    source_width: u32,
+    source_height: u32,
+) -> Result<bgremove_core::AlphaMask> {
+    restore_u2net_mask_values(raw, true, source_width, source_height)
+}
+
+fn restore_u2net_mask_values(
+    raw: &[f32],
+    per_image_minmax: bool,
+    source_width: u32,
+    source_height: u32,
+) -> Result<bgremove_core::AlphaMask> {
+    ensure!(!raw.is_empty(), "U2-Net output is empty");
+    ensure!(
+        raw.iter().all(|v| v.is_finite()),
+        "U2-Net output contains NaN/Inf"
+    );
+    let normalized = if per_image_minmax {
+        let (min, max) = raw
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(*v), hi.max(*v))
+            });
+        if max == min {
+            vec![0u8; raw.len()]
+        } else {
+            raw.iter()
+                .map(|v| (((v - min) / (max - min)).clamp(0.0, 1.0) * 255.0) as u8)
+                .collect()
+        }
+    } else {
+        raw.iter()
+            .map(|v| (v.clamp(0.0, 1.0) * 255.0) as u8)
+            .collect()
+    };
+    let side = (raw.len() as f64).sqrt() as usize;
+    ensure!(
+        side * side == raw.len(),
+        "U2-Net output is not square: {} values",
+        raw.len()
+    );
+    let restored = resize_u8_pillow_lanczos(
+        &normalized,
+        side as u32,
+        side as u32,
+        1,
+        source_width,
+        source_height,
+    )?;
+    bgremove_core::AlphaMask::new(
+        source_width,
+        source_height,
+        restored.into_iter().map(|v| v as f32 / 255.0).collect(),
+    )
+}
+
+/// M5 evidence from the common single-output U2-Net adapter.
+pub struct U2netRunEvidence {
+    pub tensor: TensorInput,
+    pub raw_output: TensorOutput,
+    pub transformed_output: TensorOutput,
+    pub restored: bgremove_core::AlphaMask,
+}
+
+/// One tested adapter serves general, light, human and Silueta U2-Net
+/// checkpoints. The manifest selects only the verified model and output
+/// transform; no model is downloaded here.
+pub struct U2netSegmenter {
+    pool: SessionPool,
+    normalization: OutputNormalization,
+}
+
+impl U2netSegmenter {
+    pub fn new(
+        manifest: &ModelManifest,
+        manifest_path: &Path,
+        runtime: &Path,
+        workers: usize,
+        requested: RequestedProvider,
+        fallback_allowed: bool,
+    ) -> Result<Self> {
+        ensure!(
+            manifest.algorithm_family == "u2net",
+            "U2-Net adapter requires algorithm_family=u2net"
+        );
+        ensure!(
+            manifest.width == 320 && manifest.height == 320,
+            "U2-Net mask adapter requires 320x320"
+        );
+        ensure!(
+            manifest.layout == bgremove_models::ModelLayout::Nchw,
+            "U2-Net input must be NCHW"
+        );
+        ensure!(
+            manifest.channel_order == bgremove_models::ChannelOrder::Rgb,
+            "U2-Net input must be RGB"
+        );
+        ensure!(
+            manifest.resize_filter == bgremove_models::ResizeFilter::Lanczos3,
+            "U2-Net input resize must be Lanczos3"
+        );
+        ensure!(
+            manifest.activation == Activation::None,
+            "U2-Net output is direct; activation must be none"
+        );
+        ensure!(
+            manifest.output_index == Some(0),
+            "U2-Net must explicitly select first output (output_index=0)"
+        );
+        ensure!(
+            manifest.input_type == Some(TensorElementType::F32)
+                && manifest.output_type == Some(TensorElementType::F32),
+            "U2-Net tensors must be f32"
+        );
+        ensure!(
+            manifest.input_shape
+                == vec![
+                    DimensionSpec::Static(1),
+                    DimensionSpec::Static(3),
+                    DimensionSpec::Static(320),
+                    DimensionSpec::Static(320)
+                ],
+            "U2-Net input shape metadata mismatch"
+        );
+        ensure!(
+            manifest.output_shape
+                == vec![
+                    DimensionSpec::Static(1),
+                    DimensionSpec::Static(1),
+                    DimensionSpec::Static(320),
+                    DimensionSpec::Static(320)
+                ],
+            "U2-Net output shape metadata mismatch"
+        );
+        ensure!(
+            manifest.mean == [0.485, 0.456, 0.406] && manifest.std == [0.229, 0.224, 0.225],
+            "U2-Net ImageNet normalization metadata mismatch"
+        );
+        ensure!(
+            matches!(
+                manifest.output_normalization,
+                OutputNormalization::None
+                    | OutputNormalization::MinMax
+                    | OutputNormalization::Clamp
+            ),
+            "unsupported U2-Net output normalization"
+        );
+        Ok(Self {
+            pool: SessionPool::new(
+                manifest,
+                manifest_path,
+                runtime,
+                workers,
+                requested,
+                fallback_allowed,
+            )?,
+            normalization: manifest.output_normalization,
+        })
+    }
+
+    pub fn predict_with_evidence(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+    ) -> Result<U2netRunEvidence> {
+        let tensor = u2net_preprocess_rgb(image, 320, 320)?;
+        let mut lease = self.pool.checkout();
+        let output = lease.session_mut().run(&tensor.shape, &tensor.values)?;
+        let raw_output = output.clone();
+        first_output_mask(&output, 320, 320, "u2net")?;
+        let transformed_output =
+            apply_output_transform(output, Activation::None, self.normalization)?;
+        let transformed = first_output_mask(&transformed_output, 320, 320, "u2net")?;
+        let restored =
+            restore_u2net_mask_values(&transformed, false, image.width(), image.height())?;
+        Ok(U2netRunEvidence {
+            tensor,
+            raw_output,
+            transformed_output,
+            restored,
+        })
+    }
+
+    pub fn predict(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+    ) -> Result<bgremove_core::AlphaMask> {
+        Ok(self.predict_with_evidence(image)?.restored)
+    }
+    pub fn provider(&self) -> ProviderReport {
+        self.pool.provider_report()
+    }
+}
+
+impl bgremove_core::Segmenter for U2netSegmenter {
+    fn predict(
+        &mut self,
+        image: &bgremove_core::CanonicalImage,
+        _prompt: Option<&bgremove_core::Prompt>,
+    ) -> Result<bgremove_core::AlphaMask> {
+        U2netSegmenter::predict(self, image)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClothCategory {
+    Upper,
+    Lower,
+    Full,
+}
+impl ClothCategory {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "upper" => Ok(Self::Upper),
+            "lower" => Ok(Self::Lower),
+            "full" => Ok(Self::Full),
+            other => bail!("invalid cloth category {other}; expected upper, lower, or full"),
+        }
+    }
+    pub fn class(self) -> u8 {
+        match self {
+            Self::Upper => 1,
+            Self::Lower => 2,
+            Self::Full => 3,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Upper => "upper",
+            Self::Lower => "lower",
+            Self::Full => "full",
+        }
+    }
+}
+
+/// Compute the cloth class-ID map from class-major logits. The strict `>`
+/// comparison deliberately gives the first class the win on exact ties, as
+/// NumPy's `argmax` does.
+pub fn cloth_argmax_class_map(logits: &[f32], classes: usize, pixels: usize) -> Result<Vec<u8>> {
+    ensure!(classes > 0 && classes <= 256, "invalid cloth class count");
+    ensure!(pixels > 0, "invalid cloth pixel count");
+    ensure!(
+        logits.len() == classes * pixels,
+        "cloth logits length mismatch"
+    );
+    ensure!(
+        logits.iter().all(|value| value.is_finite()),
+        "cloth logits contain NaN/Inf"
+    );
+    Ok((0..pixels)
+        .map(|pixel| {
+            let mut best = 0usize;
+            for class in 1..classes {
+                if logits[class * pixels + pixel] > logits[best * pixels + pixel] {
+                    best = class;
+                }
+            }
+            best as u8
+        })
+        .collect())
+}
+
+/// Return a normalized binary alpha mask for one garment category.
+pub fn cloth_category_mask(class_map: &[u8], category: ClothCategory) -> Vec<f32> {
+    class_map
+        .iter()
+        .map(|class| f32::from(*class == category.class()))
+        .collect()
+}
+
+/// Return the same garment selector in rembg's binary uint8 convention.
+pub fn cloth_category_mask_u8(class_map: &[u8], category: ClothCategory) -> Vec<u8> {
+    class_map
+        .iter()
+        .map(|class| if *class == category.class() { 255 } else { 0 })
+        .collect()
+}
+
+pub struct U2netClothRunEvidence {
+    pub tensor: TensorInput,
+    pub raw_output: TensorOutput,
+    pub class_map: Vec<u8>,
+    pub restored_class_map: Vec<u8>,
+}
+
+pub struct U2netClothSegmenter {
+    pool: SessionPool,
+}
+impl U2netClothSegmenter {
+    pub fn new(
+        manifest: &ModelManifest,
+        manifest_path: &Path,
+        runtime: &Path,
+        workers: usize,
+        requested: RequestedProvider,
+        fallback_allowed: bool,
+    ) -> Result<Self> {
+        ensure!(
+            manifest.algorithm_family == "u2net",
+            "cloth adapter requires algorithm_family=u2net"
+        );
+        ensure!(
+            manifest.model_domain == "cloth",
+            "cloth adapter requires model_domain=cloth"
+        );
+        ensure!(
+            manifest.width == 768 && manifest.height == 768,
+            "cloth model requires 768x768"
+        );
+        ensure!(
+            manifest.layout == bgremove_models::ModelLayout::Nchw
+                && manifest.channel_order == bgremove_models::ChannelOrder::Rgb,
+            "cloth model requires RGB NCHW"
+        );
+        ensure!(
+            manifest.resize_filter == bgremove_models::ResizeFilter::Lanczos3,
+            "cloth input resize must be Lanczos3"
+        );
+        ensure!(
+            manifest.output_index == Some(0),
+            "cloth model must explicitly select output 0"
+        );
+        ensure!(
+            manifest.input_shape
+                == vec![
+                    DimensionSpec::Dynamic("batch".into()),
+                    DimensionSpec::Static(3),
+                    DimensionSpec::Static(768),
+                    DimensionSpec::Static(768)
+                ],
+            "cloth input shape metadata mismatch"
+        );
+        ensure!(
+            manifest.output_shape
+                == vec![
+                    DimensionSpec::Dynamic("batch".into()),
+                    DimensionSpec::Static(4),
+                    DimensionSpec::Static(768),
+                    DimensionSpec::Static(768)
+                ],
+            "cloth output shape metadata mismatch: expected background + 3 classes"
+        );
+        ensure!(
+            manifest.input_type == Some(TensorElementType::F32)
+                && manifest.output_type == Some(TensorElementType::F32),
+            "cloth tensors must be f32"
+        );
+        ensure!(
+            manifest.activation == Activation::None,
+            "cloth output is direct logits; activation must be none"
+        );
+        ensure!(
+            manifest.output_normalization == OutputNormalization::None,
+            "cloth output must remain logits for argmax"
+        );
+        Ok(Self {
+            pool: SessionPool::new(
+                manifest,
+                manifest_path,
+                runtime,
+                workers,
+                requested,
+                fallback_allowed,
+            )?,
+        })
+    }
+    pub fn predict_categories(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+        category: Option<ClothCategory>,
+    ) -> Result<Vec<(ClothCategory, bgremove_core::AlphaMask)>> {
+        let evidence = self.predict_with_evidence(image)?;
+        let categories = category.into_iter().collect::<Vec<_>>();
+        let categories = if categories.is_empty() {
+            vec![
+                ClothCategory::Upper,
+                ClothCategory::Lower,
+                ClothCategory::Full,
+            ]
+        } else {
+            categories
+        };
+        categories
+            .into_iter()
+            .map(|c| {
+                let data = cloth_category_mask(&evidence.restored_class_map, c);
+                Ok((
+                    c,
+                    bgremove_core::AlphaMask::new(image.width(), image.height(), data)?,
+                ))
+            })
+            .collect()
+    }
+    pub fn predict_category(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+        category: ClothCategory,
+    ) -> Result<bgremove_core::AlphaMask> {
+        Ok(self.predict_categories(image, Some(category))?.remove(0).1)
+    }
+    pub fn predict_with_evidence(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+    ) -> Result<U2netClothRunEvidence> {
+        let tensor = u2net_preprocess_rgb(image, 768, 768)?;
+        let mut lease = self.pool.checkout();
+        let output = lease.session_mut().run(&tensor.shape, &tensor.values)?;
+        ensure!(
+            (output.shape == [1, 4, 768, 768] || output.shape == [-1, 4, 768, 768]),
+            "cloth output shape changed: {:?}",
+            output.shape
+        );
+        let plane = 768 * 768;
+        let class_map = cloth_argmax_class_map(&output.values, 4, plane)?;
+        let restored_class_map =
+            resize_u8_pillow_lanczos(&class_map, 768, 768, 1, image.width(), image.height())?;
+        Ok(U2netClothRunEvidence {
+            tensor,
+            raw_output: output,
+            class_map,
+            restored_class_map,
+        })
+    }
+    pub fn provider(&self) -> ProviderReport {
+        self.pool.provider_report()
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1234,6 +1836,266 @@ mod tests {
         )
         .unwrap();
         assert_eq!(t.values, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn m5_u2net_preprocess_is_nchw_and_constant_safe() {
+        let image =
+            bgremove_core::CanonicalImage::new(2, 1, vec![[0.0, 0.25, 1.0], [1.0, 1.0, 1.0]])
+                .unwrap();
+        let tensor = u2net_preprocess_rgb(&image, 4, 4).unwrap();
+        assert_eq!(tensor.shape, vec![1, 3, 4, 4]);
+        assert!(tensor.values.iter().all(|v| v.is_finite()));
+        let constant = bgremove_core::CanonicalImage::new(1, 1, vec![[0.0, 0.0, 0.0]]).unwrap();
+        let tensor = u2net_preprocess_rgb(&constant, 4, 4).unwrap();
+        assert!(tensor.values.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn m5_u2net_restore_constant_and_nonfinite_are_safe() {
+        let restored = restore_u2net_mask(&[3.0; 16], 3, 2).unwrap();
+        assert_eq!(restored.dimensions(), (3, 2));
+        assert!(restored.data().iter().all(|v| *v == 0.0));
+        assert!(restore_u2net_mask(&[f32::NAN; 16], 3, 2).is_err());
+        let clamped = restore_u2net_mask_values(&[0.25; 16], false, 3, 2).unwrap();
+        assert!(clamped
+            .data()
+            .iter()
+            .all(|v| (*v - 63.0 / 255.0).abs() < f32::EPSILON));
+        let near_constant = restore_u2net_mask(&[0.0, 1.0e-8, 0.0, 1.0e-8], 2, 2).unwrap();
+        assert!(near_constant.data().iter().any(|v| *v > 0.0));
+    }
+
+    #[test]
+    fn m5_cloth_category_policy_is_explicit() {
+        assert_eq!(ClothCategory::parse("upper").unwrap().as_str(), "upper");
+        assert_eq!(ClothCategory::parse("lower").unwrap().class(), 2);
+        assert_eq!(ClothCategory::parse("full").unwrap().class(), 3);
+        assert!(ClothCategory::parse("all").is_err());
+    }
+
+    #[test]
+    fn m5_cloth_argmax_and_category_masks_cover_all_classes_and_ties() {
+        // Class-major logits for five pixels: background, upper, lower, full,
+        // then an upper/lower tie. Exact ties must select the first class.
+        let logits = vec![
+            4.0, 0.0, 0.0, 0.0, 2.0, // background
+            1.0, 5.0, 0.0, 0.0, 7.0, // upper
+            1.0, 0.0, 6.0, 0.0, 7.0, // lower
+            1.0, 0.0, 0.0, 8.0, 1.0, // full
+        ];
+        let classes = cloth_argmax_class_map(&logits, 4, 5).unwrap();
+        assert_eq!(classes, vec![0, 1, 2, 3, 1]);
+        assert_eq!(
+            cloth_category_mask(&classes, ClothCategory::Upper),
+            vec![0.0, 1.0, 0.0, 0.0, 1.0]
+        );
+        assert_eq!(
+            cloth_category_mask(&classes, ClothCategory::Lower),
+            vec![0.0, 0.0, 1.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            cloth_category_mask(&classes, ClothCategory::Full),
+            vec![0.0, 0.0, 0.0, 1.0, 0.0]
+        );
+        assert_eq!(
+            cloth_category_mask_u8(&classes, ClothCategory::Upper),
+            vec![0, 255, 0, 0, 255]
+        );
+        assert_eq!(
+            cloth_category_mask_u8(&classes, ClothCategory::Lower),
+            vec![0, 0, 255, 0, 0]
+        );
+        assert_eq!(
+            cloth_category_mask_u8(&classes, ClothCategory::Full),
+            vec![0, 0, 0, 255, 0]
+        );
+        assert!(cloth_argmax_class_map(&logits[..19], 4, 5).is_err());
+        assert!(cloth_argmax_class_map(&[f32::NAN; 4], 4, 1).is_err());
+    }
+
+    #[test]
+    fn m5_python_level2_reference_files_are_tracked_and_preprocess_matches() {
+        let root = Path::new("../../tests/fixtures/m5");
+        for path in [
+            "python-ort-reference/light/landscape-3x2/preprocessed-tensor.f32le",
+            "python-ort-reference/light/landscape-3x2/raw-output.f32le",
+            "python-ort-reference/light/landscape-3x2/restored-alpha.f32le",
+            "python-ort-reference/light/landscape-3x2/final-straight-alpha-cutout.rgba",
+        ] {
+            assert!(
+                root.join(path).is_file(),
+                "missing tracked Python artifact {path}"
+            );
+        }
+        for name in ["landscape-3x2", "portrait-2x3", "odd-5x3"] {
+            let image =
+                bgremove_core::io::load_canonical(&root.join(format!("{name}.png"))).unwrap();
+            let tensor = u2net_preprocess_rgb(&image, 320, 320).unwrap();
+            let expected = std::fs::read(root.join(format!("{name}.tensor.f32le"))).unwrap();
+            let expected = expected
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                .collect::<Vec<_>>();
+            let differences = tensor
+                .values
+                .iter()
+                .zip(expected.iter())
+                .map(|(a, b)| (a - b).abs())
+                .collect::<Vec<_>>();
+            let max_abs = differences.iter().copied().fold(0.0f32, f32::max);
+            let mean_abs = differences.iter().sum::<f32>() / differences.len() as f32;
+            assert!(
+                max_abs <= 1e-6,
+                "{name} tensor max parity failed: {max_abs}"
+            );
+            assert!(
+                mean_abs <= 1e-7,
+                "{name} tensor mean parity failed: {mean_abs}"
+            );
+        }
+    }
+
+    #[test]
+    fn m5_python_parity_report_requires_light_and_cloth_geometry_passes() {
+        let report: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string("../../tests/fixtures/m5/python-ort-parity.json").unwrap(),
+        )
+        .unwrap();
+        for domain in ["light", "cloth"] {
+            for geometry in ["landscape-3x2", "portrait-2x3", "odd-5x3"] {
+                assert_eq!(
+                    report["models"][domain]["records"][geometry]["rust_parity"]["verdict"], "pass",
+                    "tracked {domain}/{geometry} parity is not pass"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "real CPU ORT level-2 parity gate; run explicitly with ORT_DYLIB"]
+    fn m5_python_level2_reference_matches_real_rust_ort() {
+        let root = Path::new("../../tests/fixtures/m5");
+        let manifest_path = Path::new("../../models/m5_u2netp.toml");
+        let manifest =
+            bgremove_models::parse_toml(&std::fs::read_to_string(manifest_path).unwrap()).unwrap();
+        let runtime = std::env::var_os("ORT_DYLIB").expect("ORT_DYLIB");
+        let segmenter = U2netSegmenter::new(
+            &manifest,
+            manifest_path,
+            Path::new(&runtime),
+            1,
+            RequestedProvider::Cpu,
+            false,
+        )
+        .unwrap();
+        let image = bgremove_core::io::load_canonical(&root.join("landscape-3x2.png")).unwrap();
+        let evidence = segmenter.predict_with_evidence(&image).unwrap();
+        let read_f32 = |name: &str| {
+            std::fs::read(
+                root.join("python-ort-reference/light/landscape-3x2")
+                    .join(name),
+            )
+            .unwrap()
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect::<Vec<_>>()
+        };
+        let expected_raw = read_f32("raw-output.f32le");
+        let raw_max = evidence
+            .raw_output
+            .values
+            .iter()
+            .zip(expected_raw)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(raw_max <= 1e-5, "raw level-2 parity failed: {raw_max}");
+        let expected_alpha = read_f32("restored-alpha.f32le");
+        let alpha_max = evidence
+            .restored
+            .data()
+            .iter()
+            .zip(expected_alpha)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert_eq!(alpha_max, 0.0);
+        let cutout = isnet_straight_cutout(&image, evidence.restored).unwrap();
+        let actual = cutout
+            .rgb()
+            .data()
+            .iter()
+            .zip(cutout.alpha().data())
+            .flat_map(|(rgb, alpha)| {
+                [
+                    (rgb[0] * 255.0).round() as u8,
+                    (rgb[1] * 255.0).round() as u8,
+                    (rgb[2] * 255.0).round() as u8,
+                    (alpha * 255.0).round() as u8,
+                ]
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            std::fs::read(
+                root.join(
+                    "python-ort-reference/light/landscape-3x2/final-straight-alpha-cutout.rgba"
+                )
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    #[ignore = "real CPU cloth ORT level-2 parity gate; run explicitly with ORT_DYLIB"]
+    fn m5_python_cloth_reference_matches_real_rust_ort() {
+        let root = Path::new("../../tests/fixtures/m5");
+        let manifest_path = Path::new("../../models/m5_u2net_cloth.toml");
+        let manifest =
+            bgremove_models::parse_toml(&std::fs::read_to_string(manifest_path).unwrap()).unwrap();
+        let runtime = std::env::var_os("ORT_DYLIB").expect("ORT_DYLIB");
+        let segmenter = U2netClothSegmenter::new(
+            &manifest,
+            manifest_path,
+            Path::new(&runtime),
+            1,
+            RequestedProvider::Cpu,
+            false,
+        )
+        .unwrap();
+        let image = bgremove_core::io::load_canonical(&root.join("landscape-3x2.png")).unwrap();
+        let evidence = segmenter.predict_with_evidence(&image).unwrap();
+        let base = root.join("python-ort-cloth-reference/cloth/landscape-3x2");
+        let expected_raw = std::fs::read(base.join("raw-output.f32le"))
+            .unwrap()
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        let raw_max = evidence
+            .raw_output
+            .values
+            .iter()
+            .zip(expected_raw)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            raw_max <= 1e-4,
+            "cloth raw level-2 parity failed: {raw_max}"
+        );
+        assert_eq!(
+            evidence.restored_class_map,
+            std::fs::read(base.join("restored-class-map.u8")).unwrap()
+        );
+        for (category, mask) in segmenter.predict_categories(&image, None).unwrap() {
+            let actual = mask
+                .data()
+                .iter()
+                .map(|v| (v * 255.0).round() as u8)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual,
+                std::fs::read(base.join(format!("{}-mask.u8", category.as_str()))).unwrap()
+            );
+        }
     }
 
     #[test]

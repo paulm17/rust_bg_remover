@@ -1,0 +1,56 @@
+{
+  "schema": "m5.python-ort-level2.v1",
+  "python": {
+    "numpy": "1.26.4",
+    "pillow": "10.4.0",
+    "onnxruntime": "1.23.2",
+    "providers": [
+      "CPUExecutionProvider"
+    ]
+  },
+  "source": "rembg/BaseSession.normalize and session.predict@030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+  "tolerances": {
+    "preprocessed_tensor_max_abs": 1e-06,
+    "preprocessed_tensor_mean_abs": 1e-07,
+    "single_mask_raw_output_max_abs": 1e-05,
+    "cloth_raw_logits_max_abs": 0.0001,
+    "cloth_raw_logits_mean_abs": 3e-06,
+    "raw_output_mean_abs": 1e-06,
+    "restored_alpha_u8_max_abs": 0,
+    "cutout_byte_mismatches": 0
+  },
+  "models": {
+    "cloth": {
+      "path": "projects/python/rembg/u2net_cloth_seg.onnx",
+      "sha256": "6d2cbc27bfbdc989e1fd325656d65902ecc6a3ccbe94b2d3655ec114efcb128e",
+      "provider": [
+        "CPUExecutionProvider"
+      ],
+      "inputs": [
+        "input"
+      ],
+      "outputs": [
+        "output",
+        "d1",
+        "onnx::Concat_1876",
+        "onnx::Concat_1896",
+        "onnx::Concat_1916",
+        "onnx::Concat_1936",
+        "onnx::Concat_1956"
+      ],
+      "records": {
+        "landscape-3x2": {
+          "raw_shape": [
+            1,
+            4,
+            768,
+            768
+          ],
+          "classes": [
+            0
+          ]
+        }
+      }
+    }
+  }
+}

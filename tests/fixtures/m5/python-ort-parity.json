@@ -1,0 +1,408 @@
+{
+  "schema": "m5.python-ort-level2.v1",
+  "python": {
+    "numpy": "1.26.4",
+    "pillow": "10.4.0",
+    "onnxruntime": "1.23.2",
+    "providers": [
+      "CPUExecutionProvider"
+    ]
+  },
+  "source": "rembg/BaseSession.normalize and session.predict@030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+  "tolerances": {
+    "preprocessed_tensor_max_abs": 1e-06,
+    "preprocessed_tensor_mean_abs": 1e-07,
+    "single_mask_raw_output_max_abs": 1e-05,
+    "cloth_raw_logits_max_abs": 0.0001,
+    "cloth_raw_logits_mean_abs": 3e-06,
+    "raw_output_mean_abs": 1e-06,
+    "restored_alpha_u8_max_abs": 0,
+    "cutout_byte_mismatches": 0
+  },
+  "models": {
+    "general": {
+      "path": "projects/python/rembg/u2net.onnx",
+      "sha256": "8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491",
+      "provider": [
+        "CPUExecutionProvider"
+      ],
+      "inputs": [
+        "input.1"
+      ],
+      "outputs": [
+        "1959",
+        "1960",
+        "1961",
+        "1962",
+        "1963",
+        "1964",
+        "1965"
+      ],
+      "records": {
+        "landscape-3x2": {
+          "raw_min": 0.0,
+          "raw_max": 0.01091054081916809,
+          "raw_shape": [
+            1,
+            320,
+            320
+          ]
+        },
+        "portrait-2x3": {
+          "raw_min": 0.0,
+          "raw_max": 0.007684677839279175,
+          "raw_shape": [
+            1,
+            320,
+            320
+          ]
+        },
+        "odd-5x3": {
+          "raw_min": 0.0,
+          "raw_max": 0.018074780702590942,
+          "raw_shape": [
+            1,
+            320,
+            320
+          ]
+        }
+      }
+    },
+    "light": {
+      "path": "projects/python/rembg/u2netp.onnx",
+      "sha256": "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8",
+      "provider": [
+        "CPUExecutionProvider"
+      ],
+      "inputs": [
+        "input.1"
+      ],
+      "outputs": [
+        "1959",
+        "1960",
+        "1961",
+        "1962",
+        "1963",
+        "1964",
+        "1965"
+      ],
+      "records": {
+        "landscape-3x2": {
+          "raw_min": 3.993511199951172e-06,
+          "raw_max": 0.006000041961669922,
+          "raw_shape": [
+            1,
+            320,
+            320
+          ],
+          "rust_parity": {
+            "preprocessed-tensor.f32le": {
+              "max_abs": 4.76837158203125e-07,
+              "mean_abs": 7.489397546578402e-08
+            },
+            "raw-output.f32le": {
+              "max_abs": 3.5762786865234375e-07,
+              "mean_abs": 2.9338115936639042e-08
+            },
+            "restored-alpha.f32le": {
+              "max_abs": 0.0,
+              "mean_abs": 0.0
+            },
+            "final-straight-alpha-cutout.rgba": {
+              "byte_mismatch_count": 0,
+              "byte_length_equal": true
+            },
+            "verdict": "pass"
+          }
+        },
+        "portrait-2x3": {
+          "raw_min": 7.152557373046875e-07,
+          "raw_max": 0.01425442099571228,
+          "raw_shape": [
+            1,
+            320,
+            320
+          ],
+          "rust_parity": {
+            "preprocessed-tensor.f32le": {
+              "max_abs": 4.76837158203125e-07,
+              "mean_abs": 7.865378393034916e-08
+            },
+            "raw-output.f32le": {
+              "max_abs": 4.470348358154297e-07,
+              "mean_abs": 2.9784278154920685e-08
+            },
+            "restored-alpha.f32le": {
+              "max_abs": 0.0,
+              "mean_abs": 0.0
+            },
+            "final-straight-alpha-cutout.rgba": {
+              "byte_mismatch_count": 0,
+              "byte_length_equal": true
+            },
+            "verdict": "pass"
+          }
+        },
+        "odd-5x3": {
+          "raw_min": 5.453824996948242e-06,
+          "raw_max": 0.9999465942382812,
+          "raw_shape": [
+            1,
+            320,
+            320
+          ],
+          "rust_parity": {
+            "preprocessed-tensor.f32le": {
+              "max_abs": 4.76837158203125e-07,
+              "mean_abs": 6.879552216787488e-08
+            },
+            "raw-output.f32le": {
+              "max_abs": 8.910894393920898e-06,
+              "mean_abs": 2.7642062150334823e-07
+            },
+            "restored-alpha.f32le": {
+              "max_abs": 0.0,
+              "mean_abs": 0.0
+            },
+            "final-straight-alpha-cutout.rgba": {
+              "byte_mismatch_count": 0,
+              "byte_length_equal": true
+            },
+            "verdict": "pass"
+          }
+        }
+      }
+    },
+    "human": {
+      "path": "projects/python/rembg/u2net_human_seg.onnx",
+      "sha256": "01eb6a29a5c4d8edb30b56adad9bb3a2a0535338e480724a213e0acfd2d1c73c",
+      "provider": [
+        "CPUExecutionProvider"
+      ],
+      "inputs": [
+        "input.1"
+      ],
+      "outputs": [
+        "1959",
+        "1960",
+        "1961",
+        "1962",
+        "1963",
+        "1964",
+        "1965"
+      ],
+      "records": {
+        "landscape-3x2": {
+          "raw_min": 0.0,
+          "raw_max": 0.0005224645137786865,
+          "raw_shape": [
+            1,
+            320,
+            320
+          ]
+        },
+        "portrait-2x3": {
+          "raw_min": 0.0,
+          "raw_max": 9.28342342376709e-05,
+          "raw_shape": [
+            1,
+            320,
+            320
+          ]
+        },
+        "odd-5x3": {
+          "raw_min": 0.0,
+          "raw_max": 0.012744754552841187,
+          "raw_shape": [
+            1,
+            320,
+            320
+          ]
+        }
+      }
+    },
+    "silueta": {
+      "path": "projects/python/rembg/silueta.onnx",
+      "sha256": "75da6c8d2f8096ec743d071951be73b4a8bc7b3e51d9a6625d63644f90ffeedb",
+      "provider": [
+        "CPUExecutionProvider"
+      ],
+      "inputs": [
+        "input.1"
+      ],
+      "outputs": [
+        "1959",
+        "1960",
+        "1961",
+        "1962",
+        "1963",
+        "1964",
+        "1965"
+      ],
+      "records": {
+        "landscape-3x2": {
+          "raw_min": 0.0,
+          "raw_max": 0.010920852422714233,
+          "raw_shape": [
+            1,
+            320,
+            320
+          ]
+        },
+        "portrait-2x3": {
+          "raw_min": 0.0,
+          "raw_max": 0.0039483606815338135,
+          "raw_shape": [
+            1,
+            320,
+            320
+          ]
+        },
+        "odd-5x3": {
+          "raw_min": 0.0,
+          "raw_max": 0.10233911871910095,
+          "raw_shape": [
+            1,
+            320,
+            320
+          ]
+        }
+      }
+    },
+    "cloth": {
+      "path": "projects/python/rembg/u2net_cloth_seg.onnx",
+      "sha256": "6d2cbc27bfbdc989e1fd325656d65902ecc6a3ccbe94b2d3655ec114efcb128e",
+      "provider": [
+        "CPUExecutionProvider"
+      ],
+      "inputs": [
+        "input"
+      ],
+      "outputs": [
+        "output",
+        "d1",
+        "onnx::Concat_1876",
+        "onnx::Concat_1896",
+        "onnx::Concat_1916",
+        "onnx::Concat_1936",
+        "onnx::Concat_1956"
+      ],
+      "records": {
+        "landscape-3x2": {
+          "raw_shape": [
+            1,
+            4,
+            768,
+            768
+          ],
+          "classes": [
+            0
+          ],
+          "rust_parity": {
+            "preprocessed-tensor.f32le": {
+              "max_abs": 4.76837158203125e-07,
+              "mean_abs": 7.496397813611111e-08
+            },
+            "raw-output.f32le": {
+              "max_abs": 4.76837158203125e-05,
+              "mean_abs": 2.5973076844820753e-06
+            },
+            "restored-class-map.u8": {
+              "max_abs": 0,
+              "mismatch_count": 0
+            },
+            "upper-mask.u8": {
+              "max_abs": 0,
+              "mismatch_count": 0
+            },
+            "lower-mask.u8": {
+              "max_abs": 0,
+              "mismatch_count": 0
+            },
+            "full-mask.u8": {
+              "max_abs": 0,
+              "mismatch_count": 0
+            },
+            "verdict": "pass"
+          }
+        },
+        "portrait-2x3": {
+          "raw_shape": [
+            1,
+            4,
+            768,
+            768
+          ],
+          "classes": [
+            0
+          ],
+          "rust_parity": {
+            "preprocessed-tensor.f32le": {
+              "max_abs": 4.76837158203125e-07,
+              "mean_abs": 7.84867282277446e-08
+            },
+            "raw-output.f32le": {
+              "max_abs": 3.910064697265625e-05,
+              "mean_abs": 2.116836412824341e-06
+            },
+            "restored-class-map.u8": {
+              "max_abs": 0,
+              "mismatch_count": 0
+            },
+            "upper-mask.u8": {
+              "max_abs": 0,
+              "mismatch_count": 0
+            },
+            "lower-mask.u8": {
+              "max_abs": 0,
+              "mismatch_count": 0
+            },
+            "full-mask.u8": {
+              "max_abs": 0,
+              "mismatch_count": 0
+            },
+            "verdict": "pass"
+          }
+        },
+        "odd-5x3": {
+          "raw_shape": [
+            1,
+            4,
+            768,
+            768
+          ],
+          "classes": [
+            0
+          ],
+          "rust_parity": {
+            "preprocessed-tensor.f32le": {
+              "max_abs": 4.76837158203125e-07,
+              "mean_abs": 6.87333283622138e-08
+            },
+            "raw-output.f32le": {
+              "max_abs": 3.814697265625e-05,
+              "mean_abs": 2.3941431663843105e-06
+            },
+            "restored-class-map.u8": {
+              "max_abs": 0,
+              "mismatch_count": 0
+            },
+            "upper-mask.u8": {
+              "max_abs": 0,
+              "mismatch_count": 0
+            },
+            "lower-mask.u8": {
+              "max_abs": 0,
+              "mismatch_count": 0
+            },
+            "full-mask.u8": {
+              "max_abs": 0,
+              "mismatch_count": 0
+            },
+            "verdict": "pass"
+          }
+        }
+      }
+    }
+  }
+}

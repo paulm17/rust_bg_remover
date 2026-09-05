@@ -128,6 +128,12 @@ impl DimensionSpec {
 pub struct ModelManifest {
     pub id: String,
     pub family: String,
+    /// Algorithm family (for example `u2net`) is deliberately distinct from
+    /// the checkpoint's variant, domain and deployment encoding.
+    #[serde(default = "default_model_variant")]
+    pub model_variant: String,
+    #[serde(default = "default_model_domain")]
+    pub model_domain: String,
     pub file: String,
     pub sha256: String,
     pub input_name: String,
@@ -177,6 +183,12 @@ pub struct ModelManifest {
 fn default_algorithm_family() -> String {
     "unspecified".into()
 }
+fn default_model_variant() -> String {
+    "unspecified".into()
+}
+fn default_model_domain() -> String {
+    "unspecified".into()
+}
 fn default_model_encoding() -> ModelEncoding {
     ModelEncoding::Other
 }
@@ -189,8 +201,12 @@ impl ModelManifest {
         let workspace = base
             .parent()
             .ok_or_else(|| anyhow::anyhow!("manifest has no workspace parent"))?;
-        let root = workspace.join("projects/javascript/background-removal-js");
+        let root = match self.algorithm_family.as_str() {
+            "u2net" => workspace.join("projects/python/rembg"),
+            _ => workspace.join("projects/javascript/background-removal-js"),
+        };
         let allowed = match kind {
+            "model" if self.algorithm_family == "u2net" => root.clone(),
             "model" => root.join("bundle/models"),
             "license" => root,
             _ => unreachable!(),
@@ -211,6 +227,14 @@ impl ModelManifest {
         ensure!(
             !self.algorithm_family.trim().is_empty(),
             "model algorithm family is empty"
+        );
+        ensure!(
+            !self.model_variant.trim().is_empty(),
+            "model variant is empty"
+        );
+        ensure!(
+            !self.model_domain.trim().is_empty(),
+            "model domain is empty"
         );
         ensure!(
             (self.width > 0 && self.height > 0)
@@ -470,5 +494,28 @@ mod tests {
             "output_normalization = \"clamp\""
         ))
         .is_err());
+    }
+
+    #[test]
+    fn m5_u2net_registry_separates_variant_domain_and_encoding() {
+        let paths = [
+            "../../models/m5_u2net.toml",
+            "../../models/m5_u2netp.toml",
+            "../../models/m5_u2net_human.toml",
+            "../../models/m5_silueta.toml",
+            "../../models/m5_u2net_cloth.toml",
+        ];
+        let manifests = paths
+            .iter()
+            .map(|p| parse_toml(&std::fs::read_to_string(p).unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert!(manifests.iter().all(|m| m.algorithm_family == "u2net"));
+        assert_eq!(manifests[0].model_variant, "general");
+        assert_eq!(manifests[2].model_domain, "human");
+        assert_eq!(manifests[4].model_domain, "cloth");
+        assert!(manifests
+            .iter()
+            .all(|m| m.model_encoding == ModelEncoding::Fp32));
+        assert!(manifests.iter().all(|m| m.output_index == Some(0)));
     }
 }

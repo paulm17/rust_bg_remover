@@ -1,0 +1,89 @@
+{
+  "schema": "m5.rembg-python-preprocessing.v1",
+  "records": [
+    {
+      "id": "landscape-3x2",
+      "dimensions": [
+        3,
+        2
+      ],
+      "decoded_rgb_sha256": "378a403e92e152e0c4e6706b0aff5b0e011cc72f6acba6637566bfcfd5e429f5",
+      "tensor_sha256": "d65c02ce2291d10633fee93a779715308bf4ba0fc31a23c01b3131a593df999a",
+      "tensor_shape": [
+        1,
+        3,
+        320,
+        320
+      ],
+      "resize": "Pillow-10.4.0-LANCZOS",
+      "source": "rembg/BaseSession.normalize@030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "rust_tensor_sha256": "0124b30aeba51ae83e3527a6588b8b854e19f626459a13bf46ebf31632ed10ef",
+      "tensor_parity": {
+        "max_abs": 4.76837158203125e-07,
+        "mean_abs": 7.489397546578402e-08,
+        "max_abs_tolerance": 1e-06,
+        "mean_abs_tolerance": 1e-07,
+        "status": "pass"
+      },
+      "rust_raw_output_sha256": "3b23974117cf52321e8d6111238e2874110fe7b5c7ca2bf443e944bcb481dc83",
+      "rust_restored_alpha_sha256": "b6043069dfe13f48bc02d4168d2355c8bfe6e3a27ecd9ddd11c074f5ff3c6a3f",
+      "rust_cutout_sha256": "9e59a110fc79a1011e6b5ca4633e4b107d5d8c60eb2f6096b947aa990dff7848"
+    },
+    {
+      "id": "portrait-2x3",
+      "dimensions": [
+        2,
+        3
+      ],
+      "decoded_rgb_sha256": "2f175a859e925e1412174ed3281423baee6c2d9c59a3ea97e1d22e759b34c50b",
+      "tensor_sha256": "7e9663c96ca44c0d750b95d6f8a520d203175813b3d4c7e006f22f3b1a786b6e",
+      "tensor_shape": [
+        1,
+        3,
+        320,
+        320
+      ],
+      "resize": "Pillow-10.4.0-LANCZOS",
+      "source": "rembg/BaseSession.normalize@030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "rust_tensor_sha256": "d5d0916c26f0a5b15aaa116973f02c5e8f1afaf65eaad9e0fcd4956ab7006c1d",
+      "tensor_parity": {
+        "max_abs": 4.76837158203125e-07,
+        "mean_abs": 7.865378393034916e-08,
+        "max_abs_tolerance": 1e-06,
+        "mean_abs_tolerance": 1e-07,
+        "status": "pass"
+      },
+      "rust_raw_output_sha256": "4f6146c3e43423b1d5d07a0e1a57a777ff02a86681354e61a8686b6a3eba7086",
+      "rust_restored_alpha_sha256": "5e1335fc51590d416565ef4b3b39f799a799df00b6c68e200ccf56c3dce038c8",
+      "rust_cutout_sha256": "b63b210ad3da3a4cc5158e7ca329af827f12fa382aa64b4a76b6368478f7ffc8"
+    },
+    {
+      "id": "odd-5x3",
+      "dimensions": [
+        5,
+        3
+      ],
+      "decoded_rgb_sha256": "ddb93021a4e432bc51c8b056dfa601a38c6af4cf58ce7c04a93299faf297b546",
+      "tensor_sha256": "69b0e24b1d1212880943b5fcde8a67b4a85e71a314854b2cef5215bf13e05592",
+      "tensor_shape": [
+        1,
+        3,
+        320,
+        320
+      ],
+      "resize": "Pillow-10.4.0-LANCZOS",
+      "source": "rembg/BaseSession.normalize@030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "rust_tensor_sha256": "c24542aaae6a67d3c44ea6ed3324c3b320330becef924d6c56c7abb2787bcfa5",
+      "tensor_parity": {
+        "max_abs": 4.76837158203125e-07,
+        "mean_abs": 6.879552216787488e-08,
+        "max_abs_tolerance": 1e-06,
+        "mean_abs_tolerance": 1e-07,
+        "status": "pass"
+      },
+      "rust_raw_output_sha256": "594b22d5aa500f04a7c3382a5b88ef025bfa0fd1f24f2a4fc188eb00f036e56e",
+      "rust_restored_alpha_sha256": "c309e26df174efdd07c6f8f9b66ff9c5be445f21605652a368fd469cae63cf2e",
+      "rust_cutout_sha256": "af1e1b73df3a86330cc3d0c8acd581548f92d2267a93a05bd93fd7ecfed0d730"
+    }
+  ]
+}

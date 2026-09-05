@@ -12,6 +12,8 @@
 !/runs/m4-isnet/
 /runs/m4-isnet/*
 !/runs/m4-isnet/report.json
+!/runs/m5-u2net/
+!/runs/m5-u2net/report.json
 /models/*.onnx
 /models/*.ort
 /corpus/inputs/
