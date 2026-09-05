@@ -13,6 +13,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
+use std::time::Instant;
 
 fn straight_rgba_bytes(result: &bgremove_core::Foreground) -> Vec<u8> {
     result
@@ -140,6 +142,34 @@ enum Command {
         reference: Option<PathBuf>,
         #[arg(long, default_value = "runs/m6-carvekit")]
         output: PathBuf,
+        #[arg(long, default_value = "cpu")]
+        provider: String,
+        #[arg(long, default_value_t = 1)]
+        workers: usize,
+    },
+    /// Run the BiRefNet registry and benchmark general/lite when an input,
+    /// paired reference and ORT_DYLIB are supplied. No model is downloaded.
+    M7Smoke {
+        #[arg(long)]
+        input: Option<PathBuf>,
+        #[arg(long, requires = "input")]
+        reference: Option<PathBuf>,
+        #[arg(long, default_value = "runs/m7-birefnet")]
+        output: PathBuf,
+        #[arg(long, default_value = "cpu")]
+        provider: String,
+        #[arg(long, default_value_t = 1)]
+        workers: usize,
+    },
+    /// Internal one-model worker used by M7Smoke so each RSS sample starts in
+    /// a fresh process. This is intentionally not part of the public report.
+    M7Child {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        reference: PathBuf,
+        #[arg(long)]
+        manifest: PathBuf,
         #[arg(long, default_value = "cpu")]
         provider: String,
         #[arg(long, default_value_t = 1)]
@@ -417,7 +447,315 @@ fn main() -> Result<()> {
             &provider,
             workers,
         )?,
+        Command::M7Smoke {
+            input,
+            reference,
+            output,
+            provider,
+            workers,
+        } => write_m7_smoke(
+            &output,
+            input.as_deref(),
+            reference.as_deref(),
+            &provider,
+            workers,
+        )?,
+        Command::M7Child {
+            input,
+            reference,
+            manifest,
+            provider,
+            workers,
+        } => write_m7_child(&input, &reference, &manifest, &provider, workers)?,
     }
+    Ok(())
+}
+
+fn resident_memory_bytes() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+        let result = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
+        if result == 0 {
+            Some(unsafe { usage.assume_init().ru_maxrss as u64 })
+        } else {
+            None
+        }
+    }
+    // Linux CI exposes VmRSS in kB. Other unsupported hosts report null.
+    #[cfg(not(target_os = "macos"))]
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    #[cfg(not(target_os = "macos"))]
+    let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+    #[cfg(not(target_os = "macos"))]
+    let kib = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
+    #[cfg(not(target_os = "macos"))]
+    Some(kib.saturating_mul(1024))
+}
+
+fn hash_f32_values(values: &[f32]) -> String {
+    let mut hasher = Sha256::new();
+    for value in values {
+        hasher.update(value.to_le_bytes());
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn median_ms(samples: &[f64]) -> f64 {
+    assert!(!samples.is_empty(), "median requires at least one sample");
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let middle = sorted.len() / 2;
+    if sorted.len().is_multiple_of(2) {
+        (sorted[middle - 1] + sorted[middle]) / 2.0
+    } else {
+        sorted[middle]
+    }
+}
+
+fn nearest_rank_ms(samples: &[f64], percentile: f64) -> f64 {
+    assert!(
+        !samples.is_empty(),
+        "nearest-rank percentile requires samples"
+    );
+    assert!((0.0..=1.0).contains(&percentile));
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    // Nearest-rank uses rank ceil(p * N), with rank one mapped to index zero.
+    let rank = ((percentile * sorted.len() as f64).ceil() as usize).max(1);
+    sorted[rank.min(sorted.len()) - 1]
+}
+
+fn run_m7_child(
+    input: &Path,
+    reference: &Path,
+    manifest: &Path,
+    provider: &str,
+    workers: usize,
+    specialist: &str,
+) -> Result<serde_json::Value> {
+    let executable = std::env::current_exe()?;
+    let mut command = ProcessCommand::new(executable);
+    let child = command
+        .args([
+            "m7-child",
+            "--input",
+            input
+                .to_str()
+                .ok_or_else(|| anyhow!("input path is not UTF-8"))?,
+            "--reference",
+            reference
+                .to_str()
+                .ok_or_else(|| anyhow!("reference path is not UTF-8"))?,
+            "--manifest",
+            manifest
+                .to_str()
+                .ok_or_else(|| anyhow!("manifest path is not UTF-8"))?,
+            "--provider",
+            provider,
+            "--workers",
+            &workers.to_string(),
+        ])
+        .output()?;
+    ensure!(
+        child.status.success(),
+        "isolated BiRefNet {specialist} child failed: {}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+    let mut report: serde_json::Value = serde_json::from_slice(&child.stdout)
+        .with_context(|| format!("parse isolated BiRefNet {specialist} child report"))?;
+    ensure!(
+        report["peak_resident_memory_bytes"].as_u64().is_some(),
+        "isolated BiRefNet {specialist} child did not report peak resident memory"
+    );
+    report["peak_resident_memory_definition"] =
+        serde_json::json!("ru_maxrss from a fresh per-model child process");
+    Ok(report)
+}
+
+fn write_m7_child(
+    input_path: &Path,
+    reference_path: &Path,
+    manifest_path: &Path,
+    provider_name: &str,
+    workers: usize,
+) -> Result<()> {
+    let requested = match provider_name {
+        "cpu" => bgremove_ort::RequestedProvider::Cpu,
+        "coreml" => bgremove_ort::RequestedProvider::Coreml,
+        "cuda" => bgremove_ort::RequestedProvider::Cuda,
+        other => bail!("unknown provider {other}; expected cpu, coreml, or cuda"),
+    };
+    let image = load_canonical(input_path)?;
+    let reference = ImageReader::open(reference_path)?.decode()?.to_rgba8();
+    ensure!(
+        reference.dimensions() == image.dimensions(),
+        "reference alpha dimensions must match input"
+    );
+    let reference_alpha = reference
+        .pixels()
+        .map(|pixel| f32::from(pixel.0[3]) / 255.0)
+        .collect::<Vec<_>>();
+    let manifest_text = fs::read_to_string(manifest_path)?;
+    let manifest = bgremove_models::parse_toml(&manifest_text)?;
+    let verified_model = manifest.verify_model_hash(manifest_path)?;
+    let model_bytes = fs::metadata(&verified_model)?.len();
+    let cold_start = Instant::now();
+    let segmenter = bgremove_ort::BirefnetSegmenter::new(
+        &manifest,
+        manifest_path,
+        Path::new(&std::env::var_os("ORT_DYLIB").ok_or_else(|| anyhow!("ORT_DYLIB is required"))?),
+        workers,
+        requested,
+        false,
+    )?;
+    let first = segmenter.predict_with_evidence(&image)?;
+    let cold_start_ms = cold_start.elapsed().as_secs_f64() * 1000.0;
+    // Ten post-construction samples provide a defensible median and
+    // nearest-rank p95 while keeping this heavyweight benchmark bounded on
+    // CPU-only hosts (each 1024² call is multi-second).
+    let mut latencies_ms = Vec::with_capacity(10);
+    for _ in 0..10 {
+        let started = Instant::now();
+        let evidence = segmenter.predict_with_evidence(&image)?;
+        latencies_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+        ensure!(
+            evidence
+                .raw_output
+                .values
+                .iter()
+                .chain(evidence.transformed_output.values.iter())
+                .chain(evidence.restored.data().iter())
+                .all(|value| value.is_finite()),
+            "BiRefNet produced NaN/Inf"
+        );
+    }
+    let alpha = first.restored;
+    let (mae, intersection, union) = alpha
+        .data()
+        .iter()
+        .zip(&reference_alpha)
+        .map(|(candidate, target)| {
+            (
+                f64::from((candidate - target).abs()),
+                f64::from(candidate.min(*target)),
+                f64::from(candidate.max(*target)),
+            )
+        })
+        .fold((0.0, 0.0, 0.0), |sum, values| {
+            (sum.0 + values.0, sum.1 + values.1, sum.2 + values.2)
+        });
+    let cutout = bgremove_ort::isnet_straight_cutout(&image, alpha.clone())?;
+    let cutout_png = encode_straight_rgba_png(&cutout)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "specialist": manifest.model_variant,
+            "status": "pass",
+            "model": {"id": manifest.id, "sha256": manifest.sha256, "bytes": model_bytes, "bytes_definition": "verified filesystem model file length"},
+            "input": {"path": input_path.display().to_string(), "file_sha256": sha256_hex(&fs::read(input_path)?), "decoded_rgb_sha256": hash_f32_values(&image.rgb().data().iter().flat_map(|pixel| pixel.iter().copied()).collect::<Vec<_>>())},
+            "reference": {"path": reference_path.display().to_string(), "file_sha256": sha256_hex(&fs::read(reference_path)?)},
+            "quality": {"alpha_mae": mae / alpha.data().len() as f64, "soft_iou": intersection / union.max(1e-12)},
+            "cold_start_ms": cold_start_ms,
+            "latency_ms": {"median": median_ms(&latencies_ms), "p95": nearest_rank_ms(&latencies_ms, 0.95), "samples": latencies_ms.len(), "definition": "ten wall-clock prediction calls after session construction; first prediction excluded; median is the arithmetic mean of the two middle sorted samples; p95 is nearest-rank ceil(0.95*N)"},
+            "peak_resident_memory_bytes": resident_memory_bytes(),
+            "raw_output_sha256": hash_f32_values(&first.raw_output.values),
+            "preprocessed_tensor_sha256": hash_f32_values(&first.tensor.values),
+            "restored_alpha_sha256": hash_f32_values(alpha.data()),
+            "final_straight_alpha_cutout_png_sha256": sha256_hex(&cutout_png),
+            "provider": segmenter.provider(),
+        }))?
+    );
+    Ok(())
+}
+
+fn write_m7_smoke(
+    output: &Path,
+    input: Option<&Path>,
+    reference_path: Option<&Path>,
+    provider_name: &str,
+    workers: usize,
+) -> Result<()> {
+    ensure!(
+        matches!(provider_name, "cpu" | "coreml" | "cuda"),
+        "unknown provider {provider_name}; expected cpu, coreml, or cuda"
+    );
+    let registry_paths = [
+        ("general", "models/m7_birefnet_general.toml"),
+        ("general-lite", "models/m7_birefnet_general_lite.toml"),
+        ("portrait", "models/m7_birefnet_portrait.toml"),
+        ("dis", "models/m7_birefnet_dis.toml"),
+        ("hrsod", "models/m7_birefnet_hrsod.toml"),
+        ("cod", "models/m7_birefnet_cod.toml"),
+        ("massive", "models/m7_birefnet_massive.toml"),
+    ];
+    let mut registry = Vec::with_capacity(registry_paths.len());
+    for (specialist, manifest_path) in registry_paths {
+        let text = fs::read_to_string(manifest_path)?;
+        let manifest = bgremove_models::parse_toml(&text)?;
+        let verified_model = manifest.verify_model_hash(Path::new(manifest_path)).ok();
+        let model_bytes = verified_model
+            .as_ref()
+            .and_then(|path| fs::metadata(path).ok().map(|metadata| metadata.len()));
+        registry.push(serde_json::json!({
+            "specialist": specialist,
+            "id": manifest.id,
+            "variant": manifest.model_variant,
+            "domain": manifest.model_domain,
+            "model_sha256": manifest.sha256,
+            "model_bytes": model_bytes,
+            "manifest_sha256": sha256_hex(text.as_bytes()),
+            "available": verified_model.is_some(),
+            "source_commit": manifest.source_commit,
+            "source_url": manifest.source_url,
+            "license": manifest.license_identifier,
+            "activation": manifest.activation,
+            "output_normalization": manifest.output_normalization,
+        }));
+    }
+
+    let mut runs = Vec::new();
+    let mut status = "fixture-only";
+    if let Some(input_path) = input {
+        let reference_path =
+            reference_path.ok_or_else(|| anyhow!("M7 runtime benchmark requires --reference"))?;
+        std::env::var_os("ORT_DYLIB")
+            .ok_or_else(|| anyhow!("ORT_DYLIB is required for runtime M7 benchmark"))?;
+        for (specialist, manifest_path) in [
+            ("general", "models/m7_birefnet_general.toml"),
+            ("general-lite", "models/m7_birefnet_general_lite.toml"),
+        ] {
+            runs.push(run_m7_child(
+                input_path,
+                reference_path,
+                Path::new(manifest_path),
+                provider_name,
+                workers,
+                specialist,
+            )?);
+        }
+        status = "pass";
+    }
+    fs::create_dir_all(output)?;
+    let report = serde_json::json!({
+        "schema": "m7.birefnet-benchmark.v1",
+        "status": status,
+        "source": {"repository": "projects/python/rembg", "commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709", "contract": "Pillow LANCZOS 1024 square; global max; ImageNet; output0/channel0; sigmoid then selected normalization; Pillow LANCZOS restore"},
+        "registry": registry,
+        "specialists_are_not_runtime_selection": true,
+        "benchmark": {"candidates": ["general", "general-lite"], "identical_downstream": true, "metrics": {"quality": "alpha MAE and soft IoU against paired RGBA reference; alpha in [0,1]", "model_bytes": "verified filesystem model file length", "cold_start": "session construction plus first prediction wall-clock milliseconds", "latency": "ten post-construction prediction calls; arithmetic median and nearest-rank p95 (ceil(0.95*N)) wall-clock milliseconds; CPU runtime is environment-dependent", "peak_resident_memory": "ru_maxrss from a fresh per-model child"}},
+        "runs": runs,
+        "gates": {"sigmoid_before_normalization": true, "all_registered_variants": registry.len() == 7, "runtime_downloads": false, "nan_inf_rejected": true},
+    });
+    fs::write(
+        output.join("report.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    println!("wrote {}", output.join("report.json").display());
     Ok(())
 }
 
@@ -2252,6 +2590,169 @@ mod tests {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         assert_eq!(runs[0]["reference"]["decoded_alpha_sha256"], alpha_hash);
+    }
+
+    #[test]
+    fn median_and_nearest_rank_p95_are_defined_for_even_samples() {
+        let samples = [40.0, 10.0, 30.0, 20.0];
+        assert_eq!(median_ms(&samples), 25.0);
+        assert_eq!(nearest_rank_ms(&samples, 0.95), 40.0);
+        assert_eq!(nearest_rank_ms(&[30.0, 10.0, 20.0], 0.50), 20.0);
+    }
+
+    #[test]
+    fn m7_accepted_report_has_truthful_registry_and_benchmark_evidence() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join("runs/m7-birefnet/report.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["specialists_are_not_runtime_selection"], true);
+        let latency_definition = report["benchmark"]["metrics"]["latency"].as_str().unwrap();
+        assert!(latency_definition.contains("arithmetic median"));
+        assert!(latency_definition.contains("nearest-rank p95"));
+        assert!(report["benchmark"]["metrics"]["peak_resident_memory"]
+            .as_str()
+            .unwrap()
+            .contains("fresh per-model child"));
+        let runs = report["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 2);
+        let expected_input = "test_images/reference/1.png";
+        let expected_reference = "test_images/photoroom/1.png";
+        let expected_input_file =
+            "feaad27d299d1c3d684da58fc664296811558a17ed5934c758a55269dbd2946b";
+        let expected_input_rgb = "a47fde6070b2d1caf656d27e60eb23d1ac7f53e3eb20efc63a10d77615d60a3f";
+        let expected_reference_file =
+            "c1f624a2bfb39d434c7464d1efe1e0391b4ffc6fee5dda994e6ddbfdcf3b7059";
+        let mut run_ids = BTreeSet::new();
+        let mut run_hashes = BTreeSet::new();
+        for run in runs {
+            assert_eq!(run["status"], "pass");
+            assert_eq!(run["input"]["path"], expected_input);
+            assert_eq!(run["reference"]["path"], expected_reference);
+            assert_eq!(run["input"]["file_sha256"], expected_input_file);
+            assert_eq!(run["input"]["decoded_rgb_sha256"], expected_input_rgb);
+            assert_eq!(run["reference"]["file_sha256"], expected_reference_file);
+            assert_eq!(run["provider"]["requested"], "cpu");
+            assert_eq!(run["provider"]["active"], "CPUExecutionProvider");
+            assert_eq!(run["provider"]["fallback_allowed"], false);
+            assert_eq!(run["provider"]["fallback_used"], false);
+            let cold = run["cold_start_ms"].as_f64().unwrap();
+            assert!(cold.is_finite() && cold > 0.0);
+            let latency = &run["latency_ms"];
+            assert_eq!(latency["samples"], 10);
+            let median = latency["median"].as_f64().unwrap();
+            let p95 = latency["p95"].as_f64().unwrap();
+            assert!(median.is_finite() && median > 0.0);
+            assert!(p95.is_finite() && p95 > 0.0 && p95 >= median);
+            assert!(run["peak_resident_memory_bytes"].as_u64().unwrap() > 0);
+            for metric in ["alpha_mae", "soft_iou"] {
+                let value = run["quality"][metric].as_f64().unwrap();
+                assert!(value.is_finite() && (0.0..=1.0).contains(&value));
+            }
+            let expected_run = match run["model"]["id"].as_str().unwrap() {
+                "birefnet-general@rembg-v0.0.0" => (
+                    "58f621f00f5d756097615970a88a791584600dcf7c45b18a0a6267535a1ebd3c",
+                    972_666_916u64,
+                ),
+                "birefnet-general-lite@rembg-v0.0.0" => (
+                    "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333",
+                    224_005_088u64,
+                ),
+                other => panic!("unexpected benchmark candidate {other}"),
+            };
+            assert_eq!(run["model"]["sha256"], expected_run.0);
+            assert_eq!(run["model"]["bytes"], expected_run.1);
+            run_ids.insert(run["model"]["id"].as_str().unwrap().to_owned());
+            run_hashes.insert(run["model"]["sha256"].as_str().unwrap().to_owned());
+        }
+        assert_eq!(
+            run_ids,
+            BTreeSet::from([
+                "birefnet-general@rembg-v0.0.0".to_owned(),
+                "birefnet-general-lite@rembg-v0.0.0".to_owned(),
+            ])
+        );
+        assert_eq!(run_hashes.len(), 2);
+
+        let expected_models = [
+            (
+                "general",
+                "birefnet-general@rembg-v0.0.0",
+                "models/m7_birefnet_general.toml",
+                "58f621f00f5d756097615970a88a791584600dcf7c45b18a0a6267535a1ebd3c",
+                972_666_916u64,
+            ),
+            (
+                "general-lite",
+                "birefnet-general-lite@rembg-v0.0.0",
+                "models/m7_birefnet_general_lite.toml",
+                "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333",
+                224_005_088u64,
+            ),
+            (
+                "portrait",
+                "birefnet-portrait@rembg-v0.0.0",
+                "models/m7_birefnet_portrait.toml",
+                "1ba1c8ff5a7bbfadc8d8d13fb11d7be793f91f23d9d466549e37a854f6668f99",
+                972_666_916u64,
+            ),
+            (
+                "dis",
+                "birefnet-dis@rembg-v0.0.0",
+                "models/m7_birefnet_dis.toml",
+                "6470117bac6f8d82a3f62921056f52d0f5c4d36d1d832096331d5ea38a03acb5",
+                972_666_916u64,
+            ),
+            (
+                "hrsod",
+                "birefnet-hrsod@rembg-v0.0.0",
+                "models/m7_birefnet_hrsod.toml",
+                "4f5837663194fb88f603b76782eae05a3c29f5749872ca1bfb636bd26e7f6bfc",
+                972_666_916u64,
+            ),
+            (
+                "cod",
+                "birefnet-cod@rembg-v0.0.0",
+                "models/m7_birefnet_cod.toml",
+                "91ec48f566db475cf6e4caa7e9cd997f352edfcc372372f437e2fbefc1557b13",
+                972_666_916u64,
+            ),
+            (
+                "massive",
+                "birefnet-massive@rembg-v0.0.0",
+                "models/m7_birefnet_massive.toml",
+                "a94814cac438a31f95287811882628644a04b22d313ef3071d2ba904b5f627b8",
+                972_666_916u64,
+            ),
+        ];
+        let registry = report["registry"].as_array().unwrap();
+        assert_eq!(registry.len(), expected_models.len());
+        for (specialist, id, manifest_path, model_hash, model_bytes) in expected_models {
+            let record = registry
+                .iter()
+                .find(|record| record["variant"] == specialist)
+                .unwrap();
+            assert_eq!(record["id"], id);
+            assert_eq!(record["available"], true);
+            assert_eq!(record["model_sha256"], model_hash);
+            assert_eq!(record["model_bytes"], model_bytes);
+            let manifest_path = root.join(manifest_path);
+            let manifest =
+                bgremove_models::parse_toml(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+            assert_eq!(manifest.id, id);
+            assert_eq!(manifest.sha256, model_hash);
+            assert_eq!(manifest.model_variant, specialist);
+            assert_eq!(manifest.algorithm_family, "birefnet");
+            assert!(manifest.external);
+            assert_eq!((manifest.width, manifest.height), (1024, 1024));
+            assert_eq!(manifest.scale, 1.0);
+            assert_eq!(
+                manifest.source_commit,
+                "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,101 @@
+{
+  "schema": "m7.rembg-birefnet-python-level2.v1",
+  "provenance": {
+    "repository": "projects/python/rembg",
+    "commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+    "source_files": {
+      "rembg/rembg/sessions/base.py": "ec4c58b33dd47ad6f03883ee375353314b19d5688fffd5c1ddb57bb21e9846a3",
+      "rembg/rembg/sessions/birefnet_general.py": "e985eeb1ec72df63be6992aa3104255b225fa736d601b5bcc77cc6316c810698"
+    },
+    "dependencies": {
+      "onnxruntime": "1.23.2",
+      "Pillow": "10.4.0",
+      "numpy": "1.26.4"
+    },
+    "weight_license": {
+      "path": "models/M7_BIREFNET_WEIGHT_LICENSE.txt",
+      "identifier": "MIT (BiRefNet upstream)",
+      "sha256": "92a7089e0915fc32bc40067560b398f1e6a7a5958abd7d04eda393629a5acefb",
+      "upstream_repository": "https://github.com/ZhengPeng7/BiRefNet",
+      "upstream_commit": "ebcc0bc8ec7fe919cec829f2dea656b3078acddc",
+      "upstream_url": "https://raw.githubusercontent.com/ZhengPeng7/BiRefNet/ebcc0bc8ec7fe919cec829f2dea656b3078acddc/LICENSE"
+    },
+    "input": {
+      "path": "tests/fixtures/m5/landscape-3x2.png",
+      "sha256": "d46290be343fb0c7c8ada13c51514738051632a7e80c9c0bd59e48210f814471",
+      "dimensions": [
+        3,
+        2
+      ]
+    }
+  },
+  "tolerances": {
+    "preprocessed_tensor_max_abs": 2e-06,
+    "raw_output_max_abs": 0.0005,
+    "restored_alpha_max_abs": 1e-06
+  },
+  "cases": {
+    "general": {
+      "weights": {
+        "path": "external/BiRefNet-general-epoch_244.onnx",
+        "sha256": "58f621f00f5d756097615970a88a791584600dcf7c45b18a0a6267535a1ebd3c",
+        "bytes": 972666916
+      },
+      "onnx": {
+        "input_name": "input_image",
+        "output_name": "output_image",
+        "input_shape": [
+          1,
+          3,
+          1024,
+          1024
+        ],
+        "raw_shape": [
+          1024,
+          1024
+        ]
+      },
+      "files": {
+        "decoded_rgb": "378a403e92e152e0c4e6706b0aff5b0e011cc72f6acba6637566bfcfd5e429f5",
+        "preprocessed_tensor": "9678ae83b11bfee59982248d99abf5a43fdeafa2911c9f2ace5554a62a924481",
+        "raw_output": "8d999cfc335748208092288ad71a0cc3665ed4195cd69d4e12a5dfbc501f41e8",
+        "restored_alpha": "7eba62a5b5d1d3137bdbe1ae44d1d78bc2163738e6bb2cdcf6c8877cf1d63bed",
+        "final_cutout": "d9f8e36222bacac281fcd8b8be987159b790303d38a337f0767006c657039cb2",
+        "final_cutout_file": "d9f8e36222bacac281fcd8b8be987159b790303d38a337f0767006c657039cb2"
+      },
+      "normalization": "pinned rembg BaseSession.normalize: global resized-image max, then ImageNet mean/std",
+      "postprocess": "pinned rembg BiRefNetSession*.predict: output0/channel0 logits -> sigmoid -> per-image minmax -> uint8 floor -> Pillow LANCZOS"
+    },
+    "general-lite": {
+      "weights": {
+        "path": "external/BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx",
+        "sha256": "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333",
+        "bytes": 224005088
+      },
+      "onnx": {
+        "input_name": "input_image",
+        "output_name": "output_image",
+        "input_shape": [
+          1,
+          3,
+          1024,
+          1024
+        ],
+        "raw_shape": [
+          1024,
+          1024
+        ]
+      },
+      "files": {
+        "decoded_rgb": "378a403e92e152e0c4e6706b0aff5b0e011cc72f6acba6637566bfcfd5e429f5",
+        "preprocessed_tensor": "9678ae83b11bfee59982248d99abf5a43fdeafa2911c9f2ace5554a62a924481",
+        "raw_output": "aa83efccad69d3bec95e3ee080b43c17eb59de3a475b2b7f683c003ce4854a96",
+        "restored_alpha": "89d62d376f31078d83c407b0997ab971b35e43c1096527e2b8b75e215596d76c",
+        "final_cutout": "b89ef77410fc26f0a89719b5c86a1092b4d0e5f47951a1aeae01c53f00bc157e",
+        "final_cutout_file": "b89ef77410fc26f0a89719b5c86a1092b4d0e5f47951a1aeae01c53f00bc157e"
+      },
+      "normalization": "pinned rembg BaseSession.normalize: global resized-image max, then ImageNet mean/std",
+      "postprocess": "pinned rembg BiRefNetSession*.predict: output0/channel0 logits -> sigmoid -> per-image minmax -> uint8 floor -> Pillow LANCZOS"
+    }
+  }
+}

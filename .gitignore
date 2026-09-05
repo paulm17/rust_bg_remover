@@ -16,6 +16,8 @@
 !/runs/m5-u2net/report.json
 !/runs/m6-carvekit/
 !/runs/m6-carvekit/report.json
+!/runs/m7-birefnet/
+!/runs/m7-birefnet/report.json
 /models/*.onnx
 /models/*.ort
 /corpus/inputs/

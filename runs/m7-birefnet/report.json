@@ -1,0 +1,231 @@
+{
+  "benchmark": {
+    "candidates": [
+      "general",
+      "general-lite"
+    ],
+    "identical_downstream": true,
+    "metrics": {
+      "cold_start": "session construction plus first prediction wall-clock milliseconds",
+      "latency": "ten post-construction prediction calls; arithmetic median and nearest-rank p95 (ceil(0.95*N)) wall-clock milliseconds; CPU runtime is environment-dependent",
+      "model_bytes": "verified filesystem model file length",
+      "peak_resident_memory": "ru_maxrss from a fresh per-model child",
+      "quality": "alpha MAE and soft IoU against paired RGBA reference; alpha in [0,1]"
+    }
+  },
+  "gates": {
+    "all_registered_variants": true,
+    "nan_inf_rejected": true,
+    "runtime_downloads": false,
+    "sigmoid_before_normalization": true
+  },
+  "registry": [
+    {
+      "activation": "sigmoid",
+      "available": true,
+      "domain": "general",
+      "id": "birefnet-general@rembg-v0.0.0",
+      "license": "MIT (BiRefNet upstream)",
+      "manifest_sha256": "eecd5b3c670d5d38ecab0e68ea56d87dde9aa3a519be5d2b569ad03bc3271cf3",
+      "model_bytes": 972666916,
+      "model_sha256": "58f621f00f5d756097615970a88a791584600dcf7c45b18a0a6267535a1ebd3c",
+      "output_normalization": "minmax",
+      "source_commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "source_url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-epoch_244.onnx",
+      "specialist": "general",
+      "variant": "general"
+    },
+    {
+      "activation": "sigmoid",
+      "available": true,
+      "domain": "general",
+      "id": "birefnet-general-lite@rembg-v0.0.0",
+      "license": "MIT (BiRefNet upstream)",
+      "manifest_sha256": "d2c1dc2f56d70e96373370db45dc8168639665b3aa58bd317f91aeca46cb3f9a",
+      "model_bytes": 224005088,
+      "model_sha256": "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333",
+      "output_normalization": "minmax",
+      "source_commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "source_url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx",
+      "specialist": "general-lite",
+      "variant": "general-lite"
+    },
+    {
+      "activation": "sigmoid",
+      "available": true,
+      "domain": "portrait",
+      "id": "birefnet-portrait@rembg-v0.0.0",
+      "license": "MIT (BiRefNet upstream)",
+      "manifest_sha256": "c0e16d2f48920c5cffab3e7d16bc1f85509fe57553116be985864ec0c7ee9a86",
+      "model_bytes": 972666916,
+      "model_sha256": "1ba1c8ff5a7bbfadc8d8d13fb11d7be793f91f23d9d466549e37a854f6668f99",
+      "output_normalization": "minmax",
+      "source_commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "source_url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-portrait-epoch_150.onnx",
+      "specialist": "portrait",
+      "variant": "portrait"
+    },
+    {
+      "activation": "sigmoid",
+      "available": true,
+      "domain": "dis",
+      "id": "birefnet-dis@rembg-v0.0.0",
+      "license": "MIT (BiRefNet upstream)",
+      "manifest_sha256": "ac6668579190f331ed750a537fe18ef03824d50a0e3d259ac821b1bd080a1d23",
+      "model_bytes": 972666916,
+      "model_sha256": "6470117bac6f8d82a3f62921056f52d0f5c4d36d1d832096331d5ea38a03acb5",
+      "output_normalization": "minmax",
+      "source_commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "source_url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-DIS-epoch_590.onnx",
+      "specialist": "dis",
+      "variant": "dis"
+    },
+    {
+      "activation": "sigmoid",
+      "available": true,
+      "domain": "hrsod",
+      "id": "birefnet-hrsod@rembg-v0.0.0",
+      "license": "MIT (BiRefNet upstream)",
+      "manifest_sha256": "df6f4c91c83e01770e30939606aab7b7dcdc886c3da41ac5633d26e1d271c3b4",
+      "model_bytes": 972666916,
+      "model_sha256": "4f5837663194fb88f603b76782eae05a3c29f5749872ca1bfb636bd26e7f6bfc",
+      "output_normalization": "minmax",
+      "source_commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "source_url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-HRSOD_DHU-epoch_115.onnx",
+      "specialist": "hrsod",
+      "variant": "hrsod"
+    },
+    {
+      "activation": "sigmoid",
+      "available": true,
+      "domain": "cod",
+      "id": "birefnet-cod@rembg-v0.0.0",
+      "license": "MIT (BiRefNet upstream)",
+      "manifest_sha256": "155938680a5685753d8217184ab22e41a589915149bf6ca5c066ebe08e777d62",
+      "model_bytes": 972666916,
+      "model_sha256": "91ec48f566db475cf6e4caa7e9cd997f352edfcc372372f437e2fbefc1557b13",
+      "output_normalization": "minmax",
+      "source_commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "source_url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-COD-epoch_125.onnx",
+      "specialist": "cod",
+      "variant": "cod"
+    },
+    {
+      "activation": "sigmoid",
+      "available": true,
+      "domain": "massive",
+      "id": "birefnet-massive@rembg-v0.0.0",
+      "license": "MIT (BiRefNet upstream)",
+      "manifest_sha256": "6e5160be5223a6f49b5766e26e1c11c84903530c92b391c83ae3a4480a1ca46d",
+      "model_bytes": 972666916,
+      "model_sha256": "a94814cac438a31f95287811882628644a04b22d313ef3071d2ba904b5f627b8",
+      "output_normalization": "minmax",
+      "source_commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "source_url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-massive-TR_DIS5K_TR_TEs-epoch_420.onnx",
+      "specialist": "massive",
+      "variant": "massive"
+    }
+  ],
+  "runs": [
+    {
+      "cold_start_ms": 58707.03475,
+      "final_straight_alpha_cutout_png_sha256": "98ef32202b743cdd3328c2c9122b1233923acab1835de07e8d46778dfde585fe",
+      "input": {
+        "decoded_rgb_sha256": "a47fde6070b2d1caf656d27e60eb23d1ac7f53e3eb20efc63a10d77615d60a3f",
+        "file_sha256": "feaad27d299d1c3d684da58fc664296811558a17ed5934c758a55269dbd2946b",
+        "path": "test_images/reference/1.png"
+      },
+      "latency_ms": {
+        "definition": "ten wall-clock prediction calls after session construction; first prediction excluded; median is the arithmetic mean of the two middle sorted samples; p95 is nearest-rank ceil(0.95*N)",
+        "median": 10645.243188,
+        "p95": 12614.630375,
+        "samples": 10
+      },
+      "model": {
+        "bytes": 972666916,
+        "bytes_definition": "verified filesystem model file length",
+        "id": "birefnet-general@rembg-v0.0.0",
+        "sha256": "58f621f00f5d756097615970a88a791584600dcf7c45b18a0a6267535a1ebd3c"
+      },
+      "peak_resident_memory_bytes": 12031164416,
+      "peak_resident_memory_definition": "ru_maxrss from a fresh per-model child process",
+      "preprocessed_tensor_sha256": "cec2b840550a8d8d8e7dbfe640d86d38e738b00771624841f7ed1e031b50395b",
+      "provider": {
+        "active": "CPUExecutionProvider",
+        "attempted_chain": [
+          "CPUExecutionProvider"
+        ],
+        "fallback_allowed": false,
+        "fallback_reason": null,
+        "fallback_used": false,
+        "requested": "cpu"
+      },
+      "quality": {
+        "alpha_mae": 0.002686537627581199,
+        "soft_iou": 0.9912415009423924
+      },
+      "raw_output_sha256": "5458d2074ac02fc583a5724c1c4c5e7149920b5e3abf558fb2e6d405eca83e21",
+      "reference": {
+        "file_sha256": "c1f624a2bfb39d434c7464d1efe1e0391b4ffc6fee5dda994e6ddbfdcf3b7059",
+        "path": "test_images/photoroom/1.png"
+      },
+      "restored_alpha_sha256": "51c832f6065ef5939cedbb202cfbf802cc7f2ae8bc79da4749577b5af3f0e6f7",
+      "specialist": "general",
+      "status": "pass"
+    },
+    {
+      "cold_start_ms": 18038.554375,
+      "final_straight_alpha_cutout_png_sha256": "9d41e627c736238812435b97c7e10d9abca524f518653f565d6d4655b29c883c",
+      "input": {
+        "decoded_rgb_sha256": "a47fde6070b2d1caf656d27e60eb23d1ac7f53e3eb20efc63a10d77615d60a3f",
+        "file_sha256": "feaad27d299d1c3d684da58fc664296811558a17ed5934c758a55269dbd2946b",
+        "path": "test_images/reference/1.png"
+      },
+      "latency_ms": {
+        "definition": "ten wall-clock prediction calls after session construction; first prediction excluded; median is the arithmetic mean of the two middle sorted samples; p95 is nearest-rank ceil(0.95*N)",
+        "median": 5664.950479499999,
+        "p95": 6317.172667000001,
+        "samples": 10
+      },
+      "model": {
+        "bytes": 224005088,
+        "bytes_definition": "verified filesystem model file length",
+        "id": "birefnet-general-lite@rembg-v0.0.0",
+        "sha256": "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333"
+      },
+      "peak_resident_memory_bytes": 12476989440,
+      "peak_resident_memory_definition": "ru_maxrss from a fresh per-model child process",
+      "preprocessed_tensor_sha256": "cec2b840550a8d8d8e7dbfe640d86d38e738b00771624841f7ed1e031b50395b",
+      "provider": {
+        "active": "CPUExecutionProvider",
+        "attempted_chain": [
+          "CPUExecutionProvider"
+        ],
+        "fallback_allowed": false,
+        "fallback_reason": null,
+        "fallback_used": false,
+        "requested": "cpu"
+      },
+      "quality": {
+        "alpha_mae": 0.00246347495620731,
+        "soft_iou": 0.9919664326110132
+      },
+      "raw_output_sha256": "411bcb9cfe97652a88d526d68ea41247ebe10c752cbef1b400e9b5751f355f1f",
+      "reference": {
+        "file_sha256": "c1f624a2bfb39d434c7464d1efe1e0391b4ffc6fee5dda994e6ddbfdcf3b7059",
+        "path": "test_images/photoroom/1.png"
+      },
+      "restored_alpha_sha256": "87b42e39dfcef8d31759df5c6c3f2c0b83900785da6418df87a50b73728c80c5",
+      "specialist": "general-lite",
+      "status": "pass"
+    }
+  ],
+  "schema": "m7.birefnet-benchmark.v1",
+  "source": {
+    "commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+    "contract": "Pillow LANCZOS 1024 square; global max; ImageNet; output0/channel0; sigmoid then selected normalization; Pillow LANCZOS restore",
+    "repository": "projects/python/rembg"
+  },
+  "specialists_are_not_runtime_selection": true,
+  "status": "pass"
+}

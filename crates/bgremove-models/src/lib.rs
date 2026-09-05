@@ -202,21 +202,26 @@ fn default_preprocessing_profile() -> PreprocessingProfile {
 
 impl ModelManifest {
     fn external_allowed(&self, base: &Path, canonical: &Path, kind: &str) -> Result<()> {
+        let base = base
+            .canonicalize()
+            .context("canonicalize manifest directory")?;
         let workspace = base
             .parent()
             .ok_or_else(|| anyhow::anyhow!("manifest has no workspace parent"))?;
         let root = match self.algorithm_family.as_str() {
             "u2net" => workspace.join("projects/python/rembg"),
+            "birefnet" => workspace.join("projects/python/rembg"),
             "basnet" | "deeplabv3" | "tracer-b7" => {
                 workspace.join("projects/python/image-background-remove-tool")
             }
             _ => workspace.join("projects/javascript/background-removal-js"),
         };
         let allowed = match kind {
+            "license" if self.algorithm_family == "birefnet" => workspace.to_path_buf(),
             "model"
                 if matches!(
                     self.algorithm_family.as_str(),
-                    "u2net" | "basnet" | "deeplabv3" | "tracer-b7"
+                    "u2net" | "birefnet" | "basnet" | "deeplabv3" | "tracer-b7"
                 ) =>
             {
                 root.clone()
@@ -564,5 +569,50 @@ mod tests {
         assert!(manifests.iter().all(|manifest| manifest.external));
         assert!(manifests.iter().all(|manifest| manifest.sha256.len() == 64));
         assert!(paths.iter().all(|path| std::path::Path::new(path).exists()));
+    }
+
+    #[test]
+    fn m7_birefnet_registry_separates_specialist_variants_and_pins_sources() {
+        let paths = [
+            "../../models/m7_birefnet_general.toml",
+            "../../models/m7_birefnet_general_lite.toml",
+            "../../models/m7_birefnet_portrait.toml",
+            "../../models/m7_birefnet_dis.toml",
+            "../../models/m7_birefnet_hrsod.toml",
+            "../../models/m7_birefnet_cod.toml",
+            "../../models/m7_birefnet_massive.toml",
+        ];
+        let manifests = paths
+            .iter()
+            .map(|path| parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert!(manifests.iter().all(|manifest| {
+            manifest.algorithm_family == "birefnet"
+                && manifest.width == 1024
+                && manifest.height == 1024
+                && manifest.activation == Activation::Sigmoid
+                && manifest.output_normalization == OutputNormalization::MinMax
+                && manifest.source_commit == "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709"
+                && manifest.license_identifier == "MIT (BiRefNet upstream)"
+                && manifest.external
+        }));
+        assert_eq!(
+            manifests
+                .iter()
+                .map(|manifest| manifest.model_variant.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            [
+                "general",
+                "general-lite",
+                "portrait",
+                "dis",
+                "hrsod",
+                "cod",
+                "massive"
+            ]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+        );
+        assert!(manifests.iter().all(|manifest| manifest.sha256.len() == 64));
     }
 }

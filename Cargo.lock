@@ -82,6 +82,7 @@ dependencies = [
  "bgremove-ort",
  "clap",
  "image",
+ "libc",
  "serde",
  "serde_json",
  "sha2",

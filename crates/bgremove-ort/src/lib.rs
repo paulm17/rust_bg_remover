@@ -1610,6 +1610,75 @@ pub fn u2net_preprocess_rgb(
     })
 }
 
+/// Exact rembg BiRefNet preprocessing contract at the pinned source
+/// revision.  The source image is converted to RGB, resized with Pillow's
+/// LANCZOS kernel to a stretched 1024 square, divided by the global maximum
+/// of the resized uint8 image (with the same epsilon guard as Python), then
+/// ImageNet-normalized and transposed to NCHW.
+pub fn birefnet_preprocess_rgb(image: &bgremove_core::CanonicalImage) -> Result<TensorInput> {
+    let (source_w, source_h) = image.dimensions();
+    ensure!(
+        source_w > 0 && source_h > 0,
+        "BiRefNet source dimensions must be positive"
+    );
+    let mut bytes = Vec::with_capacity(source_w as usize * source_h as usize * 3);
+    for pixel in image.rgb().data() {
+        for value in pixel {
+            bytes.push((value.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8);
+        }
+    }
+    let resized = resize_u8_pillow_lanczos(&bytes, source_w, source_h, 3, 1024, 1024)?;
+    // np.max(im_ary) is the maximum over all RGB channels.  Keeping this in
+    // byte space avoids an unnecessary rounding change from byte/255/float.
+    let denominator = (resized.iter().copied().max().unwrap_or(0) as f32).max(1.0);
+    let plane = 1024usize * 1024usize;
+    let mut values = vec![0.0f32; 3 * plane];
+    for i in 0..plane {
+        for c in 0..3 {
+            let normalized = resized[i * 3 + c] as f32 / denominator;
+            let value = (normalized - [0.485, 0.456, 0.406][c]) / [0.229, 0.224, 0.225][c];
+            ensure!(value.is_finite(), "BiRefNet preprocessing produced NaN/Inf");
+            values[c * plane + i] = value;
+        }
+    }
+    Ok(TensorInput {
+        shape: vec![1, 3, 1024, 1024],
+        values,
+    })
+}
+
+/// Restore a BiRefNet probability mask using rembg's uint8 floor conversion
+/// followed by Pillow LANCZOS.  The conversion is deliberately explicit so a
+/// clamp profile and rembg's per-image min/max profile share identical
+/// downstream geometry.
+pub fn restore_birefnet_mask(
+    values: &[f32],
+    source_width: u32,
+    source_height: u32,
+) -> Result<bgremove_core::AlphaMask> {
+    ensure!(
+        values.len() == 1024 * 1024,
+        "BiRefNet output must contain 1024x1024 values"
+    );
+    ensure!(
+        values.iter().all(|value| value.is_finite()),
+        "BiRefNet output contains NaN/Inf"
+    );
+    let bytes = values
+        .iter()
+        .map(|value| (value.clamp(0.0, 1.0) * 255.0) as u8)
+        .collect::<Vec<_>>();
+    let restored = resize_u8_pillow_lanczos(&bytes, 1024, 1024, 1, source_width, source_height)?;
+    bgremove_core::AlphaMask::new(
+        source_width,
+        source_height,
+        restored
+            .into_iter()
+            .map(|value| value as f32 / 255.0)
+            .collect(),
+    )
+}
+
 fn first_output_mask(
     output: &TensorOutput,
     width: u32,
@@ -1841,6 +1910,181 @@ impl bgremove_core::Segmenter for U2netSegmenter {
         _prompt: Option<&bgremove_core::Prompt>,
     ) -> Result<bgremove_core::AlphaMask> {
         U2netSegmenter::predict(self, image)
+    }
+}
+
+/// M7 evidence for one BiRefNet checkpoint.  The adapter is shared by all
+/// registered domain variants; the manifest selects the specialist weights,
+/// while runtime code never infers a variant from unavailable ground truth.
+pub struct BirefnetRunEvidence {
+    pub tensor: TensorInput,
+    pub raw_output: TensorOutput,
+    pub transformed_output: TensorOutput,
+    pub restored: bgremove_core::AlphaMask,
+}
+
+/// One tested 1024-square BiRefNet engine for general, lite, portrait, DIS,
+/// HRSOD, COD and massive checkpoints.
+pub struct BirefnetSegmenter {
+    pool: SessionPool,
+    activation: Activation,
+    normalization: OutputNormalization,
+}
+
+impl BirefnetSegmenter {
+    pub fn new(
+        manifest: &ModelManifest,
+        manifest_path: &Path,
+        runtime: &Path,
+        workers: usize,
+        requested: RequestedProvider,
+        fallback_allowed: bool,
+    ) -> Result<Self> {
+        ensure!(
+            manifest.algorithm_family == "birefnet",
+            "BiRefNet adapter requires algorithm_family=birefnet"
+        );
+        ensure!(
+            manifest.width == 1024 && manifest.height == 1024,
+            "BiRefNet adapter requires 1024x1024"
+        );
+        ensure!(
+            manifest.scale == 1.0,
+            "BiRefNet preprocessing scale must be exactly 1.0"
+        );
+        ensure!(
+            matches!(
+                (
+                    manifest.model_variant.as_str(),
+                    manifest.model_domain.as_str()
+                ),
+                ("general", "general")
+                    | ("general-lite", "general")
+                    | ("portrait", "portrait")
+                    | ("dis", "dis")
+                    | ("hrsod", "hrsod")
+                    | ("cod", "cod")
+                    | ("massive", "massive")
+            ),
+            "BiRefNet manifest must declare one registered specialist variant/domain pair"
+        );
+        ensure!(
+            manifest.aspect == bgremove_models::AspectPolicy::Stretch,
+            "BiRefNet adapter requires stretch geometry"
+        );
+        ensure!(
+            manifest.resize_filter == bgremove_models::ResizeFilter::Lanczos3,
+            "BiRefNet adapter requires Lanczos3 resize"
+        );
+        ensure!(
+            manifest.layout == bgremove_models::ModelLayout::Nchw
+                && manifest.channel_order == bgremove_models::ChannelOrder::Rgb,
+            "BiRefNet adapter requires RGB NCHW input"
+        );
+        ensure!(
+            manifest.activation == Activation::Sigmoid,
+            "BiRefNet output must declare sigmoid activation"
+        );
+        ensure!(
+            matches!(
+                manifest.output_normalization,
+                OutputNormalization::Clamp | OutputNormalization::MinMax
+            ),
+            "BiRefNet output must declare clamp or minmax normalization"
+        );
+        ensure!(
+            manifest.input_type == Some(TensorElementType::F32)
+                && manifest.output_type == Some(TensorElementType::F32),
+            "BiRefNet tensors must be f32"
+        );
+        ensure!(
+            manifest.output_index == Some(0),
+            "BiRefNet must explicitly select output index 0"
+        );
+        ensure!(
+            manifest.input_shape
+                == vec![
+                    DimensionSpec::Static(1),
+                    DimensionSpec::Static(3),
+                    DimensionSpec::Static(1024),
+                    DimensionSpec::Static(1024)
+                ],
+            "BiRefNet input shape metadata mismatch"
+        );
+        ensure!(
+            manifest.output_shape
+                == vec![
+                    DimensionSpec::Static(1),
+                    DimensionSpec::Static(1),
+                    DimensionSpec::Static(1024),
+                    DimensionSpec::Static(1024)
+                ],
+            "BiRefNet output shape metadata mismatch"
+        );
+        ensure!(
+            manifest.mean == [0.485, 0.456, 0.406] && manifest.std == [0.229, 0.224, 0.225],
+            "BiRefNet ImageNet normalization metadata mismatch"
+        );
+        Ok(Self {
+            pool: SessionPool::new(
+                manifest,
+                manifest_path,
+                runtime,
+                workers,
+                requested,
+                fallback_allowed,
+            )?,
+            activation: manifest.activation,
+            normalization: manifest.output_normalization,
+        })
+    }
+
+    pub fn predict_with_evidence(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+    ) -> Result<BirefnetRunEvidence> {
+        let tensor = birefnet_preprocess_rgb(image)?;
+        let mut lease = self.pool.checkout();
+        let raw_output = lease.session_mut().run(&tensor.shape, &tensor.values)?;
+        let logits = first_output_mask(&raw_output, 1024, 1024, "birefnet")?;
+        // apply_output_transform intentionally performs sigmoid before either
+        // clamp or per-image min/max.  This is the parity-critical rembg
+        // ordering; normalizing logits before sigmoid is a different model.
+        let transformed_output =
+            apply_output_transform(raw_output.clone(), self.activation, self.normalization)?;
+        let transformed = first_output_mask(&transformed_output, 1024, 1024, "birefnet")?;
+        ensure!(
+            logits.iter().all(|value| value.is_finite()),
+            "BiRefNet logits contain NaN/Inf"
+        );
+        let restored = restore_birefnet_mask(&transformed, image.width(), image.height())?;
+        Ok(BirefnetRunEvidence {
+            tensor,
+            raw_output,
+            transformed_output,
+            restored,
+        })
+    }
+
+    pub fn predict(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+    ) -> Result<bgremove_core::AlphaMask> {
+        Ok(self.predict_with_evidence(image)?.restored)
+    }
+
+    pub fn provider(&self) -> ProviderReport {
+        self.pool.provider_report()
+    }
+}
+
+impl bgremove_core::Segmenter for BirefnetSegmenter {
+    fn predict(
+        &mut self,
+        image: &bgremove_core::CanonicalImage,
+        _prompt: Option<&bgremove_core::Prompt>,
+    ) -> Result<bgremove_core::AlphaMask> {
+        BirefnetSegmenter::predict(self, image)
     }
 }
 
@@ -2720,6 +2964,280 @@ mod tests {
         )
         .unwrap();
         assert_eq!(t.values, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn m7_sigmoid_precedes_selected_output_normalization() {
+        let logits = TensorOutput {
+            shape: vec![1, 1, 1, 3],
+            values: vec![-2.0, 0.0, 2.0],
+        };
+        let clamp = apply_output_transform(
+            logits.clone(),
+            Activation::Sigmoid,
+            OutputNormalization::Clamp,
+        )
+        .unwrap();
+        let expected = [
+            1.0 / (1.0 + 2.0f32.exp()),
+            0.5,
+            1.0 / (1.0 + (-2.0f32).exp()),
+        ];
+        for (actual, expected) in clamp.values.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        let minmax =
+            apply_output_transform(logits, Activation::Sigmoid, OutputNormalization::MinMax)
+                .unwrap();
+        assert!((minmax.values[0] - 0.0).abs() < 1e-6);
+        assert!((minmax.values[1] - 0.5).abs() < 1e-6);
+        assert!((minmax.values[2] - 1.0).abs() < 1e-6);
+        let wrong_order = apply_output_transform(
+            TensorOutput {
+                shape: vec![1, 1, 1, 3],
+                values: vec![-2.0, 0.0, 2.0],
+            },
+            Activation::None,
+            OutputNormalization::MinMax,
+        )
+        .and_then(|tensor| {
+            apply_output_transform(tensor, Activation::Sigmoid, OutputNormalization::None)
+        })
+        .unwrap();
+        assert!((wrong_order.values[1] - 0.62245935).abs() < 1e-6);
+        assert!((minmax.values[1] - wrong_order.values[1]).abs() > 0.1);
+    }
+
+    #[test]
+    fn m7_preprocess_uses_global_max_and_imagenet_nchw() {
+        let image = bgremove_core::CanonicalImage::new(1, 1, vec![[1.0, 0.5, 0.0]]).unwrap();
+        let tensor = birefnet_preprocess_rgb(&image).unwrap();
+        assert_eq!(tensor.shape, vec![1, 3, 1024, 1024]);
+        let plane = 1024 * 1024;
+        assert!((tensor.values[0] - (1.0 - 0.485) / 0.229).abs() < 1e-6);
+        let green = 128.0 / 255.0;
+        assert!((tensor.values[plane] - (green - 0.456) / 0.224).abs() < 1e-6);
+        assert!((tensor.values[2 * plane] - (0.0 - 0.406) / 0.225).abs() < 1e-6);
+        assert!(tensor.values.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn m7_restore_returns_canonical_dimensions_and_finite_values() {
+        let values = vec![0.5f32; 1024 * 1024];
+        let restored = restore_birefnet_mask(&values, 5, 3).unwrap();
+        assert_eq!(restored.dimensions(), (5, 3));
+        assert!(restored.data().iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    #[ignore = "requires ORT_DYLIB and the externally supplied, hash-verified general/lite checkpoints"]
+    fn m7_python_level2_fixture_matches_every_stage_for_general_and_lite() {
+        let runtime = std::env::var_os("ORT_DYLIB").expect("ORT_DYLIB");
+        let fixture_root = Path::new("../../tests/fixtures/m7/reference");
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture_root.join("report.json")).unwrap())
+                .unwrap();
+        assert_eq!(report["schema"], "m7.rembg-birefnet-python-level2.v1");
+        assert_eq!(report["provenance"]["repository"], "projects/python/rembg");
+        assert_eq!(
+            report["provenance"]["commit"],
+            "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709"
+        );
+        assert_eq!(
+            report["provenance"]["dependencies"]["onnxruntime"],
+            "1.23.2"
+        );
+        assert_eq!(report["provenance"]["dependencies"]["Pillow"], "10.4.0");
+        assert_eq!(report["provenance"]["dependencies"]["numpy"], "1.26.4");
+        assert_eq!(
+            report["provenance"]["weight_license"]["path"],
+            "models/M7_BIREFNET_WEIGHT_LICENSE.txt"
+        );
+        assert_eq!(
+            report["provenance"]["weight_license"]["identifier"],
+            "MIT (BiRefNet upstream)"
+        );
+        assert_eq!(
+            report["provenance"]["weight_license"]["sha256"],
+            "92a7089e0915fc32bc40067560b398f1e6a7a5958abd7d04eda393629a5acefb"
+        );
+        assert_eq!(
+            report["provenance"]["weight_license"]["upstream_repository"],
+            "https://github.com/ZhengPeng7/BiRefNet"
+        );
+        assert_eq!(
+            report["provenance"]["weight_license"]["upstream_commit"],
+            "ebcc0bc8ec7fe919cec829f2dea656b3078acddc"
+        );
+        assert_eq!(
+            report["provenance"]["weight_license"]["upstream_url"],
+            "https://raw.githubusercontent.com/ZhengPeng7/BiRefNet/ebcc0bc8ec7fe919cec829f2dea656b3078acddc/LICENSE"
+        );
+        let tensor_tolerance = report["tolerances"]["preprocessed_tensor_max_abs"]
+            .as_f64()
+            .unwrap() as f32;
+        let raw_tolerance = report["tolerances"]["raw_output_max_abs"].as_f64().unwrap() as f32;
+        let alpha_tolerance = report["tolerances"]["restored_alpha_max_abs"]
+            .as_f64()
+            .unwrap() as f32;
+        let hash_file = |path: &Path| {
+            let mut digest = sha2::Sha256::new();
+            digest.update(std::fs::read(path).unwrap());
+            digest
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        for (path, expected) in [
+            (
+                "../../projects/python/rembg/rembg/sessions/base.py",
+                "ec4c58b33dd47ad6f03883ee375353314b19d5688fffd5c1ddb57bb21e9846a3",
+            ),
+            (
+                "../../projects/python/rembg/rembg/sessions/birefnet_general.py",
+                "e985eeb1ec72df63be6992aa3104255b225fa736d601b5bcc77cc6316c810698",
+            ),
+            (
+                "../../models/M7_BIREFNET_WEIGHT_LICENSE.txt",
+                "92a7089e0915fc32bc40067560b398f1e6a7a5958abd7d04eda393629a5acefb",
+            ),
+            (
+                "../../tests/fixtures/m5/landscape-3x2.png",
+                "d46290be343fb0c7c8ada13c51514738051632a7e80c9c0bd59e48210f814471",
+            ),
+        ] {
+            assert_eq!(
+                hash_file(Path::new(path)),
+                expected,
+                "fixture provenance hash {path}"
+            );
+        }
+        let read_f32 = |path: &Path| {
+            std::fs::read(path)
+                .unwrap()
+                .chunks_exact(4)
+                .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect::<Vec<_>>()
+        };
+        for (variant, manifest_path) in [
+            ("general", "../../models/m7_birefnet_general.toml"),
+            ("general-lite", "../../models/m7_birefnet_general_lite.toml"),
+        ] {
+            let dir = fixture_root.join(variant).join("landscape-3x2");
+            let case = &report["cases"][variant];
+            let expected_file_hashes = [
+                ("decoded_rgb", "decoded-rgb.f32le"),
+                ("preprocessed_tensor", "preprocessed-tensor.f32le"),
+                ("raw_output", "raw-output.f32le"),
+                ("restored_alpha", "restored-alpha.f32le"),
+                ("final_cutout_file", "final-straight-alpha-cutout.rgba"),
+            ];
+            for (field, filename) in expected_file_hashes {
+                let path = dir.join(filename);
+                let expected = case["files"][field].as_str().unwrap();
+                assert_eq!(hash_file(&path), expected, "fixture artifact hash {path:?}");
+            }
+            let decoded = read_f32(&dir.join("decoded-rgb.f32le"));
+            let image = bgremove_core::CanonicalImage::new(
+                3,
+                2,
+                decoded
+                    .chunks_exact(3)
+                    .map(|pixel| [pixel[0], pixel[1], pixel[2]])
+                    .collect(),
+            )
+            .unwrap();
+            let manifest =
+                bgremove_models::parse_toml(&std::fs::read_to_string(manifest_path).unwrap())
+                    .unwrap();
+            let segmenter = BirefnetSegmenter::new(
+                &manifest,
+                Path::new(manifest_path),
+                Path::new(&runtime),
+                1,
+                RequestedProvider::Cpu,
+                false,
+            )
+            .unwrap();
+            let evidence = segmenter.predict_with_evidence(&image).unwrap();
+            let expected_tensor = read_f32(&dir.join("preprocessed-tensor.f32le"));
+            let expected_raw = read_f32(&dir.join("raw-output.f32le"));
+            let expected_alpha = read_f32(&dir.join("restored-alpha.f32le"));
+            assert_eq!(evidence.tensor.values.len(), expected_tensor.len());
+            assert_eq!(evidence.raw_output.values.len(), expected_raw.len());
+            assert_eq!(evidence.restored.data().len(), expected_alpha.len());
+            let max_delta = |actual: &[f32], expected: &[f32]| {
+                actual
+                    .iter()
+                    .zip(expected)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0f32, f32::max)
+            };
+            assert!(max_delta(&evidence.tensor.values, &expected_tensor) <= tensor_tolerance);
+            let raw_delta = max_delta(&evidence.raw_output.values, &expected_raw);
+            assert!(
+                raw_delta <= raw_tolerance,
+                "raw output max delta for {variant}: {raw_delta}"
+            );
+            assert!(max_delta(evidence.restored.data(), &expected_alpha) <= alpha_tolerance);
+            let expected_cutout =
+                std::fs::read(dir.join("final-straight-alpha-cutout.rgba")).unwrap();
+            assert_eq!(
+                straight_rgba_bytes_for_test(&image, evidence.restored),
+                expected_cutout
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "real M7 CPU ORT gate; requires all seven hash-verified external checkpoints"]
+    fn m7_real_cpu_registry_shapes_and_finite_output() {
+        let runtime = std::env::var_os("ORT_DYLIB").expect("ORT_DYLIB required");
+        let image =
+            bgremove_core::io::load_canonical(Path::new("../../test_images/reference/1.png"))
+                .unwrap();
+        for manifest_path in [
+            "../../models/m7_birefnet_general.toml",
+            "../../models/m7_birefnet_general_lite.toml",
+            "../../models/m7_birefnet_portrait.toml",
+            "../../models/m7_birefnet_dis.toml",
+            "../../models/m7_birefnet_hrsod.toml",
+            "../../models/m7_birefnet_cod.toml",
+            "../../models/m7_birefnet_massive.toml",
+        ] {
+            let manifest =
+                bgremove_models::parse_toml(&std::fs::read_to_string(manifest_path).unwrap())
+                    .unwrap();
+            let segmenter = BirefnetSegmenter::new(
+                &manifest,
+                Path::new(manifest_path),
+                Path::new(&runtime),
+                1,
+                RequestedProvider::Cpu,
+                false,
+            )
+            .unwrap();
+            let evidence = segmenter.predict_with_evidence(&image).unwrap();
+            assert_eq!(evidence.tensor.shape, vec![1, 3, 1024, 1024]);
+            assert_eq!(evidence.raw_output.shape, vec![1, 1, 1024, 1024]);
+            assert!(evidence
+                .raw_output
+                .values
+                .iter()
+                .all(|value| value.is_finite()));
+            assert!(evidence
+                .transformed_output
+                .values
+                .iter()
+                .all(|value| value.is_finite()));
+            assert_eq!(evidence.restored.dimensions(), image.dimensions());
+            assert!(evidence
+                .restored
+                .data()
+                .iter()
+                .all(|value| value.is_finite()));
+        }
     }
 
     #[test]
