@@ -131,6 +131,20 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         workers: usize,
     },
+    /// Run the deterministic M6 CarveKit segmenter registry and raw-alpha
+    /// tournament. Runtime inference requires an explicit input and ORT_DYLIB.
+    M6Smoke {
+        #[arg(long)]
+        input: Option<PathBuf>,
+        #[arg(long, requires = "input")]
+        reference: Option<PathBuf>,
+        #[arg(long, default_value = "runs/m6-carvekit")]
+        output: PathBuf,
+        #[arg(long, default_value = "cpu")]
+        provider: String,
+        #[arg(long, default_value_t = 1)]
+        workers: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -387,6 +401,19 @@ fn main() -> Result<()> {
             input.as_deref(),
             &manifest,
             category.as_deref(),
+            &provider,
+            workers,
+        )?,
+        Command::M6Smoke {
+            input,
+            reference,
+            output,
+            provider,
+            workers,
+        } => write_m6_smoke(
+            &output,
+            input.as_deref(),
+            reference.as_deref(),
             &provider,
             workers,
         )?,
@@ -831,6 +858,228 @@ fn write_m5_smoke(
         "provider":runtime_run.get("provider").cloned().unwrap_or(serde_json::json!({"requested":provider_name,"active":"not-run"})),
         "python_ort_parity":python_ort_parity,
         "domain_runs":domain_runs, "runtime_run":runtime_run, "deterministic":true
+    });
+    let mut bytes = serde_json::to_vec_pretty(&report)?;
+    bytes.push(b'\n');
+    fs::write(output.join("report.json"), bytes)?;
+    println!("wrote {}", output.display());
+    Ok(())
+}
+
+fn write_m6_smoke(
+    output: &Path,
+    input: Option<&Path>,
+    reference_path: Option<&Path>,
+    provider_name: &str,
+    workers: usize,
+) -> Result<()> {
+    let requested = match provider_name {
+        "cpu" => bgremove_ort::RequestedProvider::Cpu,
+        "coreml" => bgremove_ort::RequestedProvider::Coreml,
+        "cuda" => bgremove_ort::RequestedProvider::Cuda,
+        other => bail!("unknown provider {other}; expected cpu, coreml, or cuda"),
+    };
+    let manifests = [
+        ("basnet", "models/m6_basnet.toml"),
+        ("deeplabv3", "models/m6_deeplabv3.toml"),
+        ("tracer-b7", "models/m6_tracer_b7.toml"),
+    ];
+    let hash_bytes = |bytes: &[u8]| {
+        let mut h = Sha256::new();
+        h.update(bytes);
+        h.finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let hash_f32 = |values: &[f32]| {
+        let mut h = Sha256::new();
+        for value in values {
+            h.update(value.to_le_bytes());
+        }
+        h.finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let registry = manifests.iter().map(|(family, path)| {
+        let text = fs::read_to_string(path)?;
+        let manifest = bgremove_models::parse_toml(&text)?;
+        let available = manifest.verify_model_hash(Path::new(path)).is_ok();
+        Ok::<_, anyhow::Error>(serde_json::json!({
+            "family": family,
+            "manifest": path,
+            "id": manifest.id,
+            "algorithm_family": manifest.algorithm_family,
+            "model_variant": manifest.model_variant,
+            "model_domain": manifest.model_domain,
+            "model_encoding": manifest.model_encoding,
+            "geometry": {"aspect": manifest.aspect, "input": [manifest.width, manifest.height], "resize_filter": manifest.resize_filter},
+            "input_name": manifest.input_name,
+            "output_name": manifest.output_name,
+            "output_index": manifest.output_index,
+            "output_normalization": manifest.output_normalization,
+            "class_mapping": manifest.class_mapping,
+            "model_sha256": manifest.sha256,
+            "manifest_sha256": hash_bytes(text.as_bytes()),
+            "available": available,
+            "hair_checkpoint_registered": false,
+        }))
+    }).collect::<Result<Vec<_>>>()?;
+    let mut runs = Vec::new();
+    let mut status = "fixture-only";
+    if let Some(input_path) = input {
+        let reference_path = reference_path.ok_or_else(|| {
+            anyhow!("M6 runtime tournament requires --reference paired alpha input")
+        })?;
+        let runtime = std::env::var_os("ORT_DYLIB")
+            .ok_or_else(|| anyhow!("ORT_DYLIB is required for runtime M6 smoke"))?;
+        let image = load_canonical(input_path)?;
+        let reference = ImageReader::open(reference_path)?.decode()?.to_rgba8();
+        ensure!(
+            reference.dimensions() == image.dimensions(),
+            "reference alpha dimensions must match the original input"
+        );
+        let reference_alpha = reference
+            .pixels()
+            .map(|pixel| f32::from(pixel.0[3]) / 255.0)
+            .collect::<Vec<_>>();
+        let input_file_sha256 = hash_bytes(&fs::read(input_path)?);
+        let reference_file_sha256 = hash_bytes(&fs::read(reference_path)?);
+        let decoded_rgb_sha256 = hash_f32(
+            &image
+                .rgb()
+                .data()
+                .iter()
+                .flat_map(|pixel| pixel.iter().copied())
+                .collect::<Vec<_>>(),
+        );
+        let reference_alpha_sha256 = hash_f32(&reference_alpha);
+        let runtime_path = Path::new(&runtime);
+        let run_one = |family: &str, manifest_path: &str| -> Result<serde_json::Value> {
+            let manifest_text = fs::read_to_string(manifest_path)?;
+            let m = bgremove_models::parse_toml(&manifest_text)?;
+            let (tensor, raw, alpha, provider) = match family {
+                "basnet" => {
+                    let s = bgremove_ort::BasnetSegmenter::new(
+                        &m,
+                        Path::new(manifest_path),
+                        runtime_path,
+                        workers,
+                        requested,
+                        false,
+                    )?;
+                    let e = s.predict_with_evidence(&image)?;
+                    (e.tensor, e.raw_output, e.restored, s.provider())
+                }
+                "deeplabv3" => {
+                    let s = bgremove_ort::DeepLabV3Segmenter::new(
+                        &m,
+                        Path::new(manifest_path),
+                        runtime_path,
+                        workers,
+                        requested,
+                        false,
+                    )?;
+                    let e = s.predict_with_evidence(&image)?;
+                    (e.tensor, e.raw_output, e.restored, s.provider())
+                }
+                "tracer-b7" => {
+                    let s = bgremove_ort::TracerB7Segmenter::new(
+                        &m,
+                        Path::new(manifest_path),
+                        runtime_path,
+                        workers,
+                        requested,
+                        false,
+                    )?;
+                    let e = s.predict_with_evidence(&image)?;
+                    (e.tensor, e.raw_output, e.restored, s.provider())
+                }
+                "u2net" => {
+                    let s = bgremove_ort::U2netSegmenter::new(
+                        &m,
+                        Path::new(manifest_path),
+                        runtime_path,
+                        workers,
+                        requested,
+                        false,
+                    )?;
+                    let e = s.predict_with_evidence(&image)?;
+                    (e.tensor, e.raw_output, e.restored, s.provider())
+                }
+                "isnet" => {
+                    let s = bgremove_ort::IsnetSegmenter::new(
+                        &m,
+                        Path::new(manifest_path),
+                        runtime_path,
+                        workers,
+                        bgremove_models::PreprocessingProfile::ImglyIsnet,
+                        requested,
+                        false,
+                    )?;
+                    let e = s.predict_with_evidence(&image)?;
+                    (e.tensor, e.raw_output, e.restored, s.provider())
+                }
+                _ => bail!("unknown M6 family {family}"),
+            };
+            ensure!(
+                alpha.data().len() == reference_alpha.len(),
+                "{family} alpha/reference lengths differ"
+            );
+            let (alpha_mae_sum, intersection, union) = alpha
+                .data()
+                .iter()
+                .zip(&reference_alpha)
+                .map(|(candidate, target)| {
+                    (
+                        (candidate - target).abs(),
+                        candidate.min(*target),
+                        candidate.max(*target),
+                    )
+                })
+                .fold((0.0f64, 0.0f64, 0.0f64), |acc, item| {
+                    (
+                        acc.0 + f64::from(item.0),
+                        acc.1 + f64::from(item.1),
+                        acc.2 + f64::from(item.2),
+                    )
+                });
+            let alpha_mae = alpha_mae_sum / alpha.data().len() as f64;
+            let soft_iou = intersection / union.max(1e-12);
+            let cutout = bgremove_ort::isnet_straight_cutout(&image, alpha.clone())?;
+            let cutout_png = encode_straight_rgba_png(&cutout)?;
+            Ok(serde_json::json!({
+                "family": family, "status": "pass", "dimensions": [image.width(), image.height()],
+                "model": {"id": m.id, "variant": m.model_variant, "encoding": m.model_encoding, "algorithm_family": m.algorithm_family, "manifest_sha256": hash_bytes(manifest_text.as_bytes()), "model_sha256": m.sha256},
+                "input": {"path": input_path.display().to_string(), "file_sha256": input_file_sha256, "decoded_rgb_sha256": decoded_rgb_sha256},
+                "reference": {"path": reference_path.display().to_string(), "file_sha256": reference_file_sha256, "decoded_alpha_sha256": reference_alpha_sha256, "alpha_channel": "RGBA channel 3"},
+                "preprocessed_tensor_sha256": hash_f32(&tensor.values), "preprocessed_tensor_shape": tensor.shape,
+                "raw_output_sha256": hash_f32(&raw.values), "raw_output_shape": raw.shape,
+                "restored_alpha_sha256": hash_f32(alpha.data()), "final_straight_alpha_cutout_png_sha256": hash_bytes(&cutout_png),
+                "metrics": {"alpha_mae": alpha_mae, "soft_iou": soft_iou},
+                "provider": provider,
+            }))
+        };
+        for (family, path) in manifests {
+            runs.push(run_one(family, path)?);
+        }
+        // M6's tournament is deliberately raw-alpha and uses the already
+        // accepted M4/M5 adapters for the two control candidates.
+        runs.push(run_one("u2net", "models/m5_u2net.toml")?);
+        runs.push(run_one("isnet", "models/m4_isnet_fp32.toml")?);
+        status = "pass";
+    }
+    fs::create_dir_all(output)?;
+    let report = serde_json::json!({
+        "schema": "m6.carvekit-raw-alpha-tournament.v1",
+        "status": status,
+        "source": {"repository": "projects/python/image-background-remove-tool", "commit": "f141a311af67fb1da64269c508a6d1f786420801"},
+        "models": registry,
+        "tournament": {"candidates": ["u2net", "isnet", "basnet", "deeplabv3", "tracer-b7"], "shared_downstream": "raw alpha, canonical dimensions, straight-alpha original RGB, no cleanup/refiner", "identical_downstream": true, "reference": "explicit --reference RGBA alpha paired with explicit --input RGB", "metrics": {"alpha_mae": "mean(abs(candidate_alpha - reference_alpha)) over canonical pixels; lower is better; units=alpha in [0,1]", "soft_iou": "sum(min(candidate_alpha, reference_alpha)) / sum(max(candidate_alpha, reference_alpha)); higher is better; units=unitless"}},
+        "gates": {"deep_lab_hard_argmax": true, "deep_lab_softening_before_refiner": false, "tracer_hair_registered": false, "nan_inf_rejected": true, "constant_minmax_safe": true},
+        "runs": runs,
+        "deterministic": true,
     });
     let mut bytes = serde_json::to_vec_pretty(&report)?;
     bytes.push(b'\n');
@@ -1933,6 +2182,76 @@ mod tests {
         let mut value = serde_json::to_value(test_record("one", Split::Tune, "group")).unwrap();
         value["unexpected"] = serde_json::json!(true);
         assert!(serde_json::from_value::<ManifestRecord>(value).is_err());
+    }
+
+    #[test]
+    fn m6_accepted_report_has_five_truthful_quantitative_runs() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join("runs/m6-carvekit/report.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["tournament"]["identical_downstream"], true);
+        let runs = report["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 5);
+        let ids = runs
+            .iter()
+            .map(|run| run["model"]["id"].as_str().unwrap())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(ids.len(), 5);
+        assert!(runs
+            .iter()
+            .any(|run| run["family"] == "u2net" && run["model"]["variant"] == "general"));
+        for run in runs {
+            assert_eq!(run["status"], "pass");
+            assert_eq!(run["provider"]["active"], "CPUExecutionProvider");
+            assert_eq!(run["provider"]["fallback_used"], false);
+            for metric in ["alpha_mae", "soft_iou"] {
+                let value = run["metrics"][metric].as_f64().unwrap();
+                assert!(value.is_finite() && (0.0..=1.0).contains(&value));
+            }
+            assert_eq!(run["input"]["path"], "test_images/reference/1.png");
+            assert_eq!(run["reference"]["path"], "test_images/photoroom/1.png");
+            assert_eq!(
+                run["input"]["decoded_rgb_sha256"],
+                runs[0]["input"]["decoded_rgb_sha256"]
+            );
+            assert_eq!(
+                run["reference"]["decoded_alpha_sha256"],
+                runs[0]["reference"]["decoded_alpha_sha256"]
+            );
+            assert_eq!(run["model"]["manifest_sha256"].as_str().unwrap().len(), 64);
+            assert_eq!(run["model"]["model_sha256"].as_str().unwrap().len(), 64);
+        }
+        let image = load_canonical(&root.join("test_images/reference/1.png")).unwrap();
+        let mut digest = Sha256::new();
+        for pixel in image.rgb().data() {
+            for value in pixel {
+                digest.update(value.to_le_bytes());
+            }
+        }
+        let input_hash = digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(runs[0]["input"]["decoded_rgb_sha256"], input_hash);
+        let reference = ImageReader::open(root.join("test_images/photoroom/1.png"))
+            .unwrap()
+            .decode()
+            .unwrap()
+            .to_rgba8();
+        let mut digest = Sha256::new();
+        for pixel in reference.pixels() {
+            digest.update((f32::from(pixel.0[3]) / 255.0).to_le_bytes());
+        }
+        let alpha_hash = digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(runs[0]["reference"]["decoded_alpha_sha256"], alpha_hash);
     }
 
     #[test]

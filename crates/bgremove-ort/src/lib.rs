@@ -210,6 +210,254 @@ pub fn resize_u8_pillow_lanczos(
     Ok(out)
 }
 
+/// Pillow 10.4's 8-bit bicubic path, used by CarveKit BASNet's default
+/// `Image.resize` call. Coefficients and the clipped intermediate are kept
+/// integer-identical to the Lanczos compatibility path above.
+pub fn resize_u8_pillow_bicubic(
+    src: &[u8],
+    src_width: u32,
+    src_height: u32,
+    channels: usize,
+    dst_width: u32,
+    dst_height: u32,
+) -> Result<Vec<u8>> {
+    ensure!(
+        channels == 1 || channels == 3,
+        "Pillow bicubic resize supports one or three channels"
+    );
+    ensure!(
+        src.len() == src_width as usize * src_height as usize * channels,
+        "Pillow bicubic source length mismatch"
+    );
+    const PRECISION: i64 = 1 << 22;
+    fn cubic(x: f64) -> f64 {
+        let x = x.abs();
+        if x <= 1.0 {
+            1.5 * x * x * x - 2.5 * x * x + 1.0
+        } else if x < 2.0 {
+            -0.5 * x * x * x + 2.5 * x * x - 4.0 * x + 2.0
+        } else {
+            0.0
+        }
+    }
+    fn coefficients(input: usize, output: usize) -> Vec<(usize, Vec<i64>)> {
+        let scale = input as f64 / output as f64;
+        let filterscale = scale.max(1.0);
+        let support = 2.0 * filterscale;
+        (0..output)
+            .map(|xx| {
+                let center = (xx as f64 + 0.5) * scale;
+                let mut xmin = (center - support + 0.5) as i32;
+                xmin = xmin.max(0);
+                let mut xmax = (center + support + 0.5) as i32;
+                xmax = xmax.min(input as i32);
+                let count = (xmax - xmin).max(0) as usize;
+                let mut weights = Vec::with_capacity(count);
+                let mut sum = 0.0;
+                for x in 0..count {
+                    let u = (x as f64 + xmin as f64 - center + 0.5) / filterscale;
+                    let weight = cubic(u);
+                    weights.push(weight);
+                    sum += weight;
+                }
+                let fixed = weights
+                    .into_iter()
+                    .map(|weight| {
+                        let value = if sum != 0.0 {
+                            weight / sum * PRECISION as f64
+                        } else {
+                            0.0
+                        };
+                        if value < 0.0 {
+                            (value - 0.5) as i64
+                        } else {
+                            (value + 0.5) as i64
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                (xmin as usize, fixed)
+            })
+            .collect()
+    }
+    fn clip(sum: i64) -> u8 {
+        ((sum >> 22).clamp(0, 255)) as u8
+    }
+    let hcoeff = coefficients(src_width as usize, dst_width as usize);
+    let vcoeff = coefficients(src_height as usize, dst_height as usize);
+    let mut horizontal = vec![0u8; dst_width as usize * src_height as usize * channels];
+    for y in 0..src_height as usize {
+        for (x, (start, weights)) in hcoeff.iter().enumerate() {
+            for c in 0..channels {
+                let mut sum = PRECISION / 2;
+                for (k, weight) in weights.iter().enumerate() {
+                    sum += src[(y * src_width as usize + start + k) * channels + c] as i64 * weight;
+                }
+                horizontal[(y * dst_width as usize + x) * channels + c] = clip(sum);
+            }
+        }
+    }
+    let mut out = vec![0u8; dst_width as usize * dst_height as usize * channels];
+    for (y, (start, weights)) in vcoeff.iter().enumerate() {
+        for x in 0..dst_width as usize {
+            for c in 0..channels {
+                let mut sum = PRECISION / 2;
+                for (k, weight) in weights.iter().enumerate() {
+                    sum += horizontal[((start + k) * dst_width as usize + x) * channels + c] as i64
+                        * weight;
+                }
+                out[(y * dst_width as usize + x) * channels + c] = clip(sum);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Pillow's 8-bit bilinear resampler, matching the coefficient convention
+/// used by CarveKit's TRACER postprocessing (`Image.resize(..., BILINEAR)`).
+pub fn resize_u8_pillow_bilinear(
+    src: &[u8],
+    src_width: u32,
+    src_height: u32,
+    channels: usize,
+    dst_width: u32,
+    dst_height: u32,
+) -> Result<Vec<u8>> {
+    ensure!(
+        channels == 1 || channels == 3,
+        "Pillow bilinear resize supports one or three channels"
+    );
+    ensure!(
+        src.len() == src_width as usize * src_height as usize * channels,
+        "Pillow bilinear source length mismatch"
+    );
+    const PRECISION: i64 = 1 << 22;
+    fn coefficients(input: usize, output: usize) -> Vec<(usize, Vec<i64>)> {
+        let scale = input as f64 / output as f64;
+        let filterscale = scale.max(1.0);
+        let support = filterscale;
+        (0..output)
+            .map(|xx| {
+                let center = (xx as f64 + 0.5) * scale;
+                let mut xmin = (center - support + 0.5) as i32;
+                xmin = xmin.max(0);
+                let mut xmax = (center + support + 0.5) as i32;
+                xmax = xmax.min(input as i32);
+                let count = (xmax - xmin).max(0) as usize;
+                let mut weights = Vec::with_capacity(count);
+                let mut sum = 0.0;
+                for x in 0..count {
+                    let u = (x as f64 + xmin as f64 - center + 0.5) / filterscale;
+                    let weight = (1.0 - u.abs()).max(0.0);
+                    weights.push(weight);
+                    sum += weight;
+                }
+                let fixed = weights
+                    .into_iter()
+                    .map(|weight| {
+                        let value = if sum != 0.0 {
+                            weight / sum * PRECISION as f64
+                        } else {
+                            0.0
+                        };
+                        if value < 0.0 {
+                            (value - 0.5) as i64
+                        } else {
+                            (value + 0.5) as i64
+                        }
+                    })
+                    .collect();
+                (xmin as usize, fixed)
+            })
+            .collect()
+    }
+    fn clip(sum: i64) -> u8 {
+        ((sum >> 22).clamp(0, 255)) as u8
+    }
+    let hcoeff = coefficients(src_width as usize, dst_width as usize);
+    let vcoeff = coefficients(src_height as usize, dst_height as usize);
+    let mut horizontal = vec![0u8; dst_width as usize * src_height as usize * channels];
+    for y in 0..src_height as usize {
+        for (x, (start, weights)) in hcoeff.iter().enumerate() {
+            for c in 0..channels {
+                let mut sum = PRECISION / 2;
+                for (k, weight) in weights.iter().enumerate() {
+                    sum += src[(y * src_width as usize + start + k) * channels + c] as i64 * weight;
+                }
+                horizontal[(y * dst_width as usize + x) * channels + c] = clip(sum);
+            }
+        }
+    }
+    let mut out = vec![0u8; dst_width as usize * dst_height as usize * channels];
+    for (y, (start, weights)) in vcoeff.iter().enumerate() {
+        for x in 0..dst_width as usize {
+            for c in 0..channels {
+                let mut sum = PRECISION / 2;
+                for (k, weight) in weights.iter().enumerate() {
+                    sum += horizontal[((start + k) * dst_width as usize + x) * channels + c] as i64
+                        * weight;
+                }
+                out[(y * dst_width as usize + x) * channels + c] = clip(sum);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Torchvision's tensor Resize path used by TRACER after ToTensor: bilinear,
+/// half-pixel coordinates, and antialiasing for downsampling. Keeping this in f32 is
+/// important; converting back to u8 before resizing introduces a larger,
+/// avoidable multi-code discrepancy.
+fn resize_f32_torchvision_bilinear(
+    src: &[[f32; 3]],
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+) -> Vec<[f32; 3]> {
+    fn coefficients(input: usize, output: usize) -> Vec<Vec<(usize, f32)>> {
+        let scale = input as f32 / output as f32;
+        let filter_scale = scale.max(1.0);
+        let support = filter_scale;
+        (0..output)
+            .map(|out| {
+                let center = (out as f32 + 0.5) * scale - 0.5;
+                let first = (center - support).ceil() as i32;
+                let last = (center + support).floor() as i32;
+                let mut weights = Vec::new();
+                for source in first..=last {
+                    let distance = ((source as f32 - center) / filter_scale).abs();
+                    let weight = (1.0 - distance).max(0.0) / filter_scale;
+                    if weight > 0.0 && (0..input as i32).contains(&source) {
+                        weights.push((source as usize, weight));
+                    }
+                }
+                let sum = weights.iter().map(|(_, weight)| *weight).sum::<f32>();
+                for (_, weight) in &mut weights {
+                    *weight /= sum;
+                }
+                weights
+            })
+            .collect()
+    }
+    let x_coefficients = coefficients(src_width as usize, dst_width as usize);
+    let y_coefficients = coefficients(src_height as usize, dst_height as usize);
+    let mut out = vec![[0.0; 3]; dst_width as usize * dst_height as usize];
+    for oy in 0..dst_height as usize {
+        for ox in 0..dst_width as usize {
+            let mut pixel = [0.0; 3];
+            for &(y, wy) in &y_coefficients[oy] {
+                for &(x, wx) in &x_coefficients[ox] {
+                    for c in 0..3 {
+                        pixel[c] += src[y * src_width as usize + x][c] * wy * wx;
+                    }
+                }
+            }
+            out[oy * dst_width as usize + ox] = pixel;
+        }
+    }
+    out
+}
+
 /// Convert a canonical encoded RGB image to the exact 1024x1024 IMG.LY input
 /// contract, retaining the evidence bytes used by the reference.
 pub fn isnet_preprocess_rgb(
@@ -1681,6 +1929,621 @@ pub struct U2netClothRunEvidence {
 pub struct U2netClothSegmenter {
     pool: SessionPool,
 }
+
+/// CarveKit's ImageNet preprocessing used by the three M6 segmenters.  The
+/// wrappers at the pinned CarveKit revision are intentionally not treated as
+/// interchangeable: BASNet stretches to 320, TRACER stretches to 640, while
+/// DeepLabV3 uses a non-upscaling aspect-preserving thumbnail.  The returned
+/// tensor is complete evidence (RGB, NCHW, f32) and never contains NaN/Inf.
+pub fn carvekit_imagenet_preprocess_rgb(
+    image: &bgremove_core::CanonicalImage,
+    family: &str,
+) -> Result<TensorInput> {
+    let (source_w, source_h) = image.dimensions();
+    let (target_w, target_h, thumbnail) = match family {
+        "basnet" => (320, 320, false),
+        "tracer-b7" => (640, 640, false),
+        "deeplabv3" => (1024, 1024, true),
+        other => bail!("unknown CarveKit M6 family {other}"),
+    };
+    ensure!(
+        source_w > 0 && source_h > 0,
+        "source dimensions must be positive"
+    );
+    let (resize_w, resize_h) = if thumbnail {
+        // Pillow Image.thumbnail never enlarges an image and keeps the aspect
+        // ratio.  Round to the nearest integer with a one-pixel lower bound.
+        let scale = (target_w as f64 / source_w as f64)
+            .min(target_h as f64 / source_h as f64)
+            .min(1.0);
+        (
+            ((source_w as f64 * scale).round() as u32).max(1),
+            ((source_h as f64 * scale).round() as u32).max(1),
+        )
+    } else {
+        (target_w, target_h)
+    };
+    if family == "tracer-b7" {
+        let resized = resize_f32_torchvision_bilinear(
+            image.rgb().data(),
+            source_w,
+            source_h,
+            resize_w,
+            resize_h,
+        );
+        let channels = resized.len();
+        let mut values = vec![0.0f32; channels * 3];
+        for (i, pixel) in resized.iter().enumerate() {
+            for c in 0..3 {
+                let value = (pixel[c] - [0.485, 0.456, 0.406][c]) / [0.229, 0.224, 0.225][c];
+                ensure!(
+                    value.is_finite(),
+                    "CarveKit {family} tensor contains NaN/Inf"
+                );
+                values[c * channels + i] = value;
+            }
+        }
+        return Ok(TensorInput {
+            values,
+            shape: vec![1, 3, i64::from(resize_h), i64::from(resize_w)],
+        });
+    }
+    let mut bytes = Vec::with_capacity(source_w as usize * source_h as usize * 3);
+    for px in image.rgb().data() {
+        for value in px {
+            bytes.push((value.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8);
+        }
+    }
+    let resized = if resize_w == source_w && resize_h == source_h {
+        bytes
+    } else {
+        match family {
+            "basnet" => {
+                resize_u8_pillow_bicubic(&bytes, source_w, source_h, 3, resize_w, resize_h)?
+            }
+            "tracer-b7" => unreachable!("TRACER uses the f32 tensor resize path above"),
+            "deeplabv3" => {
+                resize_u8_pillow_bicubic(&bytes, source_w, source_h, 3, resize_w, resize_h)?
+            }
+            _ => unreachable!(),
+        }
+    };
+    let channels = resize_w as usize * resize_h as usize;
+    let max_value = resized.iter().copied().max().unwrap_or(0) as f32;
+    let denominator = if family == "basnet" {
+        max_value.max(1.0)
+    } else {
+        255.0
+    };
+    let mut values = vec![0.0f32; channels * 3];
+    for i in 0..channels {
+        for c in 0..3 {
+            let normalized = resized[i * 3 + c] as f32 / denominator;
+            let value = (normalized - [0.485, 0.456, 0.406][c]) / [0.229, 0.224, 0.225][c];
+            ensure!(
+                value.is_finite(),
+                "CarveKit {family} tensor contains NaN/Inf"
+            );
+            values[c * channels + i] = value;
+        }
+    }
+    Ok(TensorInput {
+        shape: vec![1, 3, resize_h as i64, resize_w as i64],
+        values,
+    })
+}
+
+/// Restore an M6 direct soft mask to canonical dimensions. Quantisation is
+/// explicit because CarveKit wrappers convert to uint8 before restoring;
+/// CatmullRom selects Pillow bicubic and Triangle selects Pillow bilinear.
+pub fn restore_carvekit_soft_mask(
+    raw: &[f32],
+    model_width: u32,
+    model_height: u32,
+    source_width: u32,
+    source_height: u32,
+    filter: image::imageops::FilterType,
+) -> Result<bgremove_core::AlphaMask> {
+    ensure!(
+        model_width > 0 && model_height > 0,
+        "invalid model dimensions"
+    );
+    ensure!(
+        raw.len() == model_width as usize * model_height as usize,
+        "M6 mask length mismatch"
+    );
+    ensure!(
+        raw.iter().all(|v| v.is_finite()),
+        "M6 mask contains NaN/Inf"
+    );
+    let bytes = raw
+        .iter()
+        .map(|v| (v.clamp(0.0, 1.0) * 255.0) as u8)
+        .collect::<Vec<_>>();
+    let restored_bytes = match filter {
+        image::imageops::FilterType::CatmullRom => resize_u8_pillow_bicubic(
+            &bytes,
+            model_width,
+            model_height,
+            1,
+            source_width,
+            source_height,
+        )?,
+        image::imageops::FilterType::Triangle => resize_u8_pillow_bilinear(
+            &bytes,
+            model_width,
+            model_height,
+            1,
+            source_width,
+            source_height,
+        )?,
+        image::imageops::FilterType::Nearest => image::imageops::resize(
+            &image::GrayImage::from_raw(model_width, model_height, bytes)
+                .ok_or_else(|| anyhow::anyhow!("invalid M6 mask buffer"))?,
+            source_width,
+            source_height,
+            filter,
+        )
+        .into_raw(),
+        other => image::imageops::resize(
+            &image::GrayImage::from_raw(model_width, model_height, bytes)
+                .ok_or_else(|| anyhow::anyhow!("invalid M6 mask buffer"))?,
+            source_width,
+            source_height,
+            other,
+        )
+        .into_raw(),
+    };
+    bgremove_core::AlphaMask::new(
+        source_width,
+        source_height,
+        restored_bytes
+            .into_iter()
+            .map(|v| v as f32 / 255.0)
+            .collect(),
+    )
+}
+
+/// Convert DeepLabV3's class-major logits into a hard foreground mask.
+/// Class 0 is background and every nonzero semantic class is foreground.
+/// Strict `>` ties preserve the first-class PyTorch argmax rule.
+pub fn deeplab_argmax_foreground(
+    logits: &[f32],
+    pixels: usize,
+    classes: usize,
+) -> Result<Vec<f32>> {
+    ensure!(
+        classes >= 2,
+        "M6 DeepLabV3 expects background plus foreground classes"
+    );
+    ensure!(
+        pixels > 0 && logits.len() == classes * pixels,
+        "DeepLabV3 logits shape mismatch"
+    );
+    ensure!(
+        logits.iter().all(|v| v.is_finite()),
+        "DeepLabV3 logits contain NaN/Inf"
+    );
+    Ok((0..pixels)
+        .map(|pixel| {
+            let mut best = 0usize;
+            for class in 1..classes {
+                if logits[class * pixels + pixel] > logits[best * pixels + pixel] {
+                    best = class;
+                }
+            }
+            if best == 0 {
+                0.0
+            } else {
+                1.0
+            }
+        })
+        .collect())
+}
+
+/// M6 evidence for BASNet's first output and optional per-image min/max.
+pub struct BasnetRunEvidence {
+    pub tensor: TensorInput,
+    pub raw_output: TensorOutput,
+    pub transformed_output: TensorOutput,
+    pub restored: bgremove_core::AlphaMask,
+}
+
+pub struct BasnetSegmenter {
+    pool: SessionPool,
+    normalization: OutputNormalization,
+}
+
+impl BasnetSegmenter {
+    pub fn new(
+        manifest: &ModelManifest,
+        manifest_path: &Path,
+        runtime: &Path,
+        workers: usize,
+        requested: RequestedProvider,
+        fallback_allowed: bool,
+    ) -> Result<Self> {
+        validate_m6_manifest(manifest, "basnet", 320, 320)?;
+        ensure!(
+            manifest.output_shape
+                == vec![
+                    DimensionSpec::Static(1),
+                    DimensionSpec::Static(1),
+                    DimensionSpec::Static(320),
+                    DimensionSpec::Static(320)
+                ],
+            "BASNet output shape metadata mismatch"
+        );
+        ensure!(
+            manifest.aspect == bgremove_models::AspectPolicy::Stretch,
+            "BASNet requires stretch geometry"
+        );
+        ensure!(
+            manifest.output_index == Some(0),
+            "BASNet must select first output"
+        );
+        Ok(Self {
+            pool: SessionPool::new(
+                manifest,
+                manifest_path,
+                runtime,
+                workers,
+                requested,
+                fallback_allowed,
+            )?,
+            normalization: manifest.output_normalization,
+        })
+    }
+    pub fn predict_with_evidence(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+    ) -> Result<BasnetRunEvidence> {
+        let tensor = carvekit_imagenet_preprocess_rgb(image, "basnet")?;
+        let mut lease = self.pool.checkout();
+        let raw_output = lease.session_mut().run(&tensor.shape, &tensor.values)?;
+        let _ = first_output_mask(&raw_output, 320, 320, "basnet")?;
+        let transformed_output =
+            apply_output_transform(raw_output.clone(), Activation::None, self.normalization)?;
+        let transformed = first_output_mask(&transformed_output, 320, 320, "basnet")?;
+        let restored = restore_carvekit_soft_mask(
+            &transformed,
+            320,
+            320,
+            image.width(),
+            image.height(),
+            image::imageops::FilterType::CatmullRom,
+        )?;
+        Ok(BasnetRunEvidence {
+            tensor,
+            raw_output,
+            transformed_output,
+            restored,
+        })
+    }
+    pub fn predict(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+    ) -> Result<bgremove_core::AlphaMask> {
+        Ok(self.predict_with_evidence(image)?.restored)
+    }
+    pub fn provider(&self) -> ProviderReport {
+        self.pool.provider_report()
+    }
+}
+impl bgremove_core::Segmenter for BasnetSegmenter {
+    fn predict(
+        &mut self,
+        image: &bgremove_core::CanonicalImage,
+        _prompt: Option<&bgremove_core::Prompt>,
+    ) -> Result<bgremove_core::AlphaMask> {
+        BasnetSegmenter::predict(self, image)
+    }
+}
+
+pub struct TracerB7RunEvidence {
+    pub tensor: TensorInput,
+    pub raw_output: TensorOutput,
+    pub restored: bgremove_core::AlphaMask,
+}
+pub struct TracerB7Segmenter {
+    pool: SessionPool,
+}
+impl TracerB7Segmenter {
+    pub fn new(
+        manifest: &ModelManifest,
+        manifest_path: &Path,
+        runtime: &Path,
+        workers: usize,
+        requested: RequestedProvider,
+        fallback_allowed: bool,
+    ) -> Result<Self> {
+        validate_m6_manifest(manifest, "tracer-b7", 640, 640)?;
+        ensure!(
+            manifest.output_shape
+                == vec![
+                    DimensionSpec::Dynamic("batch".into()),
+                    DimensionSpec::Dynamic("channel".into()),
+                    DimensionSpec::Dynamic("height".into()),
+                    DimensionSpec::Dynamic("width".into())
+                ],
+            "TRACER-B7 output shape metadata mismatch"
+        );
+        ensure!(
+            manifest.aspect == bgremove_models::AspectPolicy::Stretch
+                && manifest.output_normalization == OutputNormalization::None,
+            "TRACER-B7 requires direct soft output"
+        );
+        Ok(Self {
+            pool: SessionPool::new(
+                manifest,
+                manifest_path,
+                runtime,
+                workers,
+                requested,
+                fallback_allowed,
+            )?,
+        })
+    }
+    pub fn predict_with_evidence(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+    ) -> Result<TracerB7RunEvidence> {
+        let tensor = carvekit_imagenet_preprocess_rgb(image, "tracer-b7")?;
+        let mut lease = self.pool.checkout();
+        let raw_output = lease.session_mut().run(&tensor.shape, &tensor.values)?;
+        let raw = first_output_mask(&raw_output, 640, 640, "tracer-b7")?;
+        // CarveKit casts to uint8 then uses Pillow bilinear; the helper's
+        // antialiasing is active for downsampling and matches that path.
+        let restored = restore_carvekit_soft_mask(
+            &raw,
+            640,
+            640,
+            image.width(),
+            image.height(),
+            image::imageops::FilterType::Triangle,
+        )?;
+        Ok(TracerB7RunEvidence {
+            tensor,
+            raw_output,
+            restored,
+        })
+    }
+    pub fn predict(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+    ) -> Result<bgremove_core::AlphaMask> {
+        Ok(self.predict_with_evidence(image)?.restored)
+    }
+    pub fn provider(&self) -> ProviderReport {
+        self.pool.provider_report()
+    }
+}
+impl bgremove_core::Segmenter for TracerB7Segmenter {
+    fn predict(
+        &mut self,
+        image: &bgremove_core::CanonicalImage,
+        _prompt: Option<&bgremove_core::Prompt>,
+    ) -> Result<bgremove_core::AlphaMask> {
+        TracerB7Segmenter::predict(self, image)
+    }
+}
+
+pub struct DeepLabV3RunEvidence {
+    pub tensor: TensorInput,
+    pub raw_output: TensorOutput,
+    pub hard_class_map: Vec<f32>,
+    pub restored: bgremove_core::AlphaMask,
+}
+pub struct DeepLabV3Segmenter {
+    pool: SessionPool,
+    class_count: usize,
+}
+impl DeepLabV3Segmenter {
+    pub fn new(
+        manifest: &ModelManifest,
+        manifest_path: &Path,
+        runtime: &Path,
+        workers: usize,
+        requested: RequestedProvider,
+        fallback_allowed: bool,
+    ) -> Result<Self> {
+        validate_m6_manifest(manifest, "deeplabv3", 1024, 1024)?;
+        ensure!(
+            manifest.aspect == bgremove_models::AspectPolicy::Thumbnail,
+            "DeepLabV3 requires thumbnail geometry"
+        );
+        ensure!(
+            manifest
+                .class_mapping
+                .as_ref()
+                .is_some_and(|mapping| mapping.len() >= 2 && mapping[0] == "background"),
+            "DeepLabV3 class_mapping must name background and foreground classes"
+        );
+        ensure!(
+            manifest.output_shape
+                == vec![
+                    DimensionSpec::Dynamic("batch".into()),
+                    DimensionSpec::Dynamic("classes".into()),
+                    DimensionSpec::Dynamic("height".into()),
+                    DimensionSpec::Dynamic("width".into())
+                ],
+            "DeepLabV3 output shape metadata must be [batch,classes,height,width]"
+        );
+        ensure!(
+            manifest.output_normalization == OutputNormalization::None
+                && manifest.activation == Activation::None,
+            "DeepLabV3 logits must remain direct"
+        );
+        let class_count = manifest.class_mapping.as_ref().unwrap().len();
+        Ok(Self {
+            pool: SessionPool::new(
+                manifest,
+                manifest_path,
+                runtime,
+                workers,
+                requested,
+                fallback_allowed,
+            )?,
+            class_count,
+        })
+    }
+    pub fn predict_with_evidence(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+    ) -> Result<DeepLabV3RunEvidence> {
+        let tensor = carvekit_imagenet_preprocess_rgb(image, "deeplabv3")?;
+        let mut lease = self.pool.checkout();
+        let raw_output = lease.session_mut().run(&tensor.shape, &tensor.values)?;
+        let (h, w, classes) = match raw_output.shape.as_slice() {
+            [1, classes, h, w] if *classes >= 2 && *h > 0 && *w > 0 => {
+                (*h as u32, *w as u32, *classes as usize)
+            }
+            other => bail!("DeepLabV3 output shape {other:?} is not [1,C,H,W] with C>=2"),
+        };
+        ensure!(
+            self.class_count == classes,
+            "DeepLabV3 runtime class count does not match the manifest mapping"
+        );
+        let hard_class_map =
+            deeplab_argmax_foreground(&raw_output.values, (w * h) as usize, classes)?;
+        // Keep the mask binary through restoration.  Any softening belongs to
+        // an explicit alpha refiner, never to this segmenter.
+        let restored = restore_carvekit_soft_mask(
+            &hard_class_map,
+            w,
+            h,
+            image.width(),
+            image.height(),
+            image::imageops::FilterType::Nearest,
+        )?;
+        Ok(DeepLabV3RunEvidence {
+            tensor,
+            raw_output,
+            hard_class_map,
+            restored,
+        })
+    }
+    pub fn predict(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+    ) -> Result<bgremove_core::AlphaMask> {
+        Ok(self.predict_with_evidence(image)?.restored)
+    }
+    pub fn provider(&self) -> ProviderReport {
+        self.pool.provider_report()
+    }
+}
+impl bgremove_core::Segmenter for DeepLabV3Segmenter {
+    fn predict(
+        &mut self,
+        image: &bgremove_core::CanonicalImage,
+        _prompt: Option<&bgremove_core::Prompt>,
+    ) -> Result<bgremove_core::AlphaMask> {
+        DeepLabV3Segmenter::predict(self, image)
+    }
+}
+
+fn validate_m6_manifest(
+    manifest: &ModelManifest,
+    family: &str,
+    width: u32,
+    height: u32,
+) -> Result<()> {
+    ensure!(
+        manifest.algorithm_family == family,
+        "M6 adapter requires algorithm_family={family}"
+    );
+    ensure!(
+        manifest.width == width && manifest.height == height,
+        "{family} input dimensions mismatch"
+    );
+    ensure!(manifest.scale == 1.0, "{family} scale must be exactly 1.0");
+    ensure!(
+        manifest.layout == bgremove_models::ModelLayout::Nchw
+            && manifest.channel_order == bgremove_models::ChannelOrder::Rgb,
+        "{family} requires RGB NCHW"
+    );
+    let expected_filter = match family {
+        "basnet" | "deeplabv3" => bgremove_models::ResizeFilter::Bicubic,
+        "tracer-b7" => bgremove_models::ResizeFilter::Bilinear,
+        _ => unreachable!(),
+    };
+    ensure!(
+        manifest.resize_filter == expected_filter,
+        "{family} resize filter does not match the pinned CarveKit contract"
+    );
+    ensure!(
+        manifest.mean == [0.485, 0.456, 0.406] && manifest.std == [0.229, 0.224, 0.225],
+        "{family} requires ImageNet normalization"
+    );
+    ensure!(
+        manifest.input_type == Some(TensorElementType::F32)
+            && manifest.output_type == Some(TensorElementType::F32),
+        "{family} tensors must be f32"
+    );
+    ensure!(
+        manifest.activation == Activation::None,
+        "{family} output activation must be none"
+    );
+    match family {
+        "basnet" => ensure!(
+            manifest.output_index == Some(0)
+                && matches!(
+                    manifest.output_normalization,
+                    OutputNormalization::None | OutputNormalization::MinMax
+                ),
+            "BASNet requires first output and none/minmax normalization"
+        ),
+        "deeplabv3" => {
+            let labels = manifest
+                .class_mapping
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("DeepLabV3 class mapping is required"))?;
+            ensure!(
+                labels
+                    == &[
+                        "background",
+                        "aeroplane",
+                        "bicycle",
+                        "bird",
+                        "boat",
+                        "bottle",
+                        "bus",
+                        "car",
+                        "cat",
+                        "chair",
+                        "cow",
+                        "diningtable",
+                        "dog",
+                        "horse",
+                        "motorbike",
+                        "person",
+                        "pottedplant",
+                        "sheep",
+                        "sofa",
+                        "train",
+                        "tvmonitor"
+                    ]
+                    .iter()
+                    .map(|v| (*v).to_string())
+                    .collect::<Vec<_>>(),
+                "DeepLabV3 class mapping must be the exact 21-label VOC mapping"
+            );
+            ensure!(
+                manifest.output_index == Some(0)
+                    && manifest.output_normalization == OutputNormalization::None,
+                "DeepLabV3 requires first direct output"
+            );
+        }
+        "tracer-b7" => ensure!(
+            manifest.output_index == Some(0)
+                && manifest.output_normalization == OutputNormalization::None,
+            "TRACER-B7 requires first direct output with no normalization"
+        ),
+        _ => unreachable!(),
+    }
+    Ok(())
+}
 impl U2netClothSegmenter {
     pub fn new(
         manifest: &ModelManifest,
@@ -1824,6 +2687,27 @@ impl U2netClothSegmenter {
 mod tests {
     use super::*;
     use sha2::Digest;
+
+    fn straight_rgba_bytes_for_test(
+        image: &bgremove_core::CanonicalImage,
+        alpha: bgremove_core::AlphaMask,
+    ) -> Vec<u8> {
+        let cutout = isnet_straight_cutout(image, alpha).unwrap();
+        cutout
+            .rgb()
+            .data()
+            .iter()
+            .zip(cutout.alpha().data())
+            .flat_map(|(rgb, alpha)| {
+                [
+                    (rgb[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+                    (rgb[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+                    (rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+                    (alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
+                ]
+            })
+            .collect()
+    }
     #[test]
     fn constant_minmax_is_finite() {
         let t = apply_output_transform(
@@ -1836,6 +2720,505 @@ mod tests {
         )
         .unwrap();
         assert_eq!(t.values, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn m6_deeplab_argmax_is_hard_and_background_ties_win() {
+        let logits = vec![
+            1.0, 0.0, 0.0, // background
+            1.0, 2.0, 0.0, // class 1
+            0.0, 0.0, 3.0, // class 2
+        ];
+        let mask = deeplab_argmax_foreground(&logits, 3, 3).unwrap();
+        assert_eq!(mask, vec![0.0, 1.0, 1.0]);
+        assert!(mask.iter().all(|value| *value == 0.0 || *value == 1.0));
+        assert!(deeplab_argmax_foreground(&[f32::NAN; 6], 3, 2).is_err());
+    }
+
+    #[test]
+    fn m6_carvekit_geometry_is_family_specific_and_finite() {
+        let image = bgremove_core::CanonicalImage::new(5, 3, vec![[0.0, 0.1, 0.2]; 15]).unwrap();
+        let basnet = carvekit_imagenet_preprocess_rgb(&image, "basnet").unwrap();
+        assert_eq!(basnet.shape, vec![1, 3, 320, 320]);
+        let tracer = carvekit_imagenet_preprocess_rgb(&image, "tracer-b7").unwrap();
+        assert_eq!(tracer.shape, vec![1, 3, 640, 640]);
+        let deeplab = carvekit_imagenet_preprocess_rgb(&image, "deeplabv3").unwrap();
+        assert_eq!(deeplab.shape, vec![1, 3, 3, 5]);
+        assert!(basnet
+            .values
+            .iter()
+            .chain(&tracer.values)
+            .chain(&deeplab.values)
+            .all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn m6_manifest_contract_rejects_family_tampering_before_runtime() {
+        let mut bas = bgremove_models::parse_toml(
+            &std::fs::read_to_string("../../models/m6_basnet.toml").unwrap(),
+        )
+        .unwrap();
+        bas.resize_filter = bgremove_models::ResizeFilter::Bilinear;
+        assert!(validate_m6_manifest(&bas, "basnet", 320, 320).is_err());
+        let mut deep = bgremove_models::parse_toml(
+            &std::fs::read_to_string("../../models/m6_deeplabv3.toml").unwrap(),
+        )
+        .unwrap();
+        deep.class_mapping.as_mut().unwrap().pop();
+        assert!(validate_m6_manifest(&deep, "deeplabv3", 1024, 1024).is_err());
+        let mut tracer = bgremove_models::parse_toml(
+            &std::fs::read_to_string("../../models/m6_tracer_b7.toml").unwrap(),
+        )
+        .unwrap();
+        tracer.output_normalization = OutputNormalization::MinMax;
+        assert!(validate_m6_manifest(&tracer, "tracer-b7", 640, 640).is_err());
+        tracer.output_normalization = OutputNormalization::None;
+        tracer.output_index = Some(1);
+        assert!(validate_m6_manifest(&tracer, "tracer-b7", 640, 640).is_err());
+    }
+
+    #[test]
+    fn m6_deeplab_restore_nearest_preserves_hard_mask() {
+        let mask = restore_carvekit_soft_mask(
+            &[0.0, 1.0, 1.0, 0.0],
+            2,
+            2,
+            5,
+            3,
+            image::imageops::FilterType::Nearest,
+        )
+        .unwrap();
+        assert!(mask
+            .data()
+            .iter()
+            .all(|value| *value == 0.0 || *value == 1.0));
+    }
+
+    #[test]
+    fn m6_python_level2_report_covers_three_geometries_and_two_colour_ranges() {
+        let root = Path::new("../../tests/fixtures/m6");
+        let report: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("python-onnx-parity.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["schema"], "m6.carvekit-python-level2.v1");
+        assert_eq!(report["verdict"], true);
+        assert_eq!(
+            report["provenance"]["carvekit_commit"],
+            "f141a311af67fb1da64269c508a6d1f786420801"
+        );
+        assert_eq!(report["provenance"]["tracked_source_clean"], true);
+        for wrapper in [
+            "carvekit/ml/wrap/basnet.py",
+            "carvekit/ml/wrap/deeplab_v3.py",
+            "carvekit/ml/wrap/tracer_b7.py",
+        ] {
+            assert_eq!(
+                report["provenance"]["source_file_sha256"][wrapper]
+                    .as_str()
+                    .unwrap()
+                    .len(),
+                64
+            );
+        }
+        for family in ["basnet", "deeplabv3", "tracer-b7"] {
+            let checkpoint = report["provenance"]["checkpoints"][family]["path"]
+                .as_str()
+                .unwrap();
+            assert!(checkpoint.starts_with("checkpoints/"));
+            assert!(!checkpoint.starts_with('/'));
+            let onnx = report["provenance"]["onnx"][family]["path"]
+                .as_str()
+                .unwrap();
+            assert!(onnx.starts_with("projects/python/image-background-remove-tool/m6-onnx/"));
+            assert!(!onnx.starts_with('/'));
+        }
+        for key in [
+            "onnx_raw_max_abs",
+            "onnx_raw_mean_abs",
+            "rust_tensor_mean_abs",
+            "rust_raw_max_abs",
+            "rust_raw_mean_abs",
+            "rust_restored_max_abs",
+            "rust_restored_mean_abs",
+        ] {
+            assert!(report["tolerances"][key]["value"]
+                .as_f64()
+                .unwrap()
+                .is_finite());
+            assert!(report["tolerances"][key]["value"].as_f64().unwrap() >= 0.0);
+        }
+        assert_eq!(
+            report["tolerances"]["final_cutout"]["mode"],
+            "rgba-byte-tolerance"
+        );
+        assert!(
+            report["tolerances"]["final_cutout"]["max_abs"]
+                .as_u64()
+                .unwrap()
+                <= 1
+        );
+        assert!(
+            report["tolerances"]["final_cutout"]["mean_abs"]
+                .as_f64()
+                .unwrap()
+                <= 0.1
+        );
+        let records = report["records"].as_array().unwrap();
+        assert_eq!(records.len(), 18);
+        let artifact_names = [
+            "decoded-rgb.f32le",
+            "preprocessed-tensor.f32le",
+            "raw-output.f32le",
+            "restored-alpha.f32le",
+            "final-straight-alpha-cutout.rgba",
+            "final-straight-alpha-cutout.png",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<std::collections::BTreeSet<_>>();
+        let mut expected_dirs = std::collections::BTreeSet::new();
+        let hash_file = |path: &Path| {
+            let mut digest = sha2::Sha256::new();
+            digest.update(std::fs::read(path).unwrap());
+            digest
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        for record in records {
+            let family = record["family"].as_str().unwrap();
+            let case = record["case"].as_str().unwrap();
+            let dir = root.join("reference").join(family).join(case);
+            assert!(dir.is_dir(), "missing M6 fixture directory {dir:?}");
+            expected_dirs.insert(format!("{family}/{case}"));
+            let artifacts = record["artifacts"].as_object().unwrap();
+            assert_eq!(
+                artifacts
+                    .keys()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>(),
+                artifact_names
+            );
+            let actual_files = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                actual_files, artifact_names,
+                "M6 artifact inventory drift in {dir:?}"
+            );
+            for (name, expected_hash) in artifacts {
+                let path = dir.join(name);
+                assert!(path.is_file(), "missing M6 fixture artifact {path:?}");
+                assert_eq!(
+                    hash_file(&path),
+                    expected_hash.as_str().unwrap(),
+                    "stale M6 artifact {path:?}"
+                );
+            }
+        }
+        let mut actual_dirs = std::collections::BTreeSet::new();
+        for family in ["basnet", "deeplabv3", "tracer-b7"] {
+            for entry in std::fs::read_dir(root.join("reference").join(family)).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    actual_dirs.insert(format!("{family}/{}", entry.file_name().to_string_lossy()));
+                }
+            }
+        }
+        assert_eq!(actual_dirs, expected_dirs, "M6 fixture inventory drift");
+        for family in ["basnet", "deeplabv3", "tracer-b7"] {
+            let selected = records
+                .iter()
+                .filter(|record| record["family"] == family)
+                .collect::<Vec<_>>();
+            assert_eq!(selected.len(), 6);
+            assert!(selected.iter().all(|record| record["verdict"] == true));
+            assert_eq!(
+                selected
+                    .iter()
+                    .map(|record| record["geometry"].to_string())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len(),
+                3
+            );
+            assert_eq!(
+                selected
+                    .iter()
+                    .map(|record| record["colour_range"].as_str().unwrap())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len(),
+                2
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "real M6 CPU ORT gate; run explicitly with ORT_DYLIB and external ONNX weights"]
+    fn m6_real_cpu_registry_shapes_and_hard_mask() {
+        let runtime = std::env::var_os("ORT_DYLIB").expect("ORT_DYLIB required");
+        let image =
+            bgremove_core::io::load_canonical(Path::new("../../test_images/reference/1.png"))
+                .unwrap();
+        let requested = RequestedProvider::Cpu;
+        let bas_manifest = bgremove_models::parse_toml(
+            &std::fs::read_to_string("../../models/m6_basnet.toml").unwrap(),
+        )
+        .unwrap();
+        let bas = BasnetSegmenter::new(
+            &bas_manifest,
+            Path::new("../../models/m6_basnet.toml"),
+            Path::new(&runtime),
+            1,
+            requested,
+            false,
+        )
+        .unwrap();
+        let bas_alpha = bas.predict(&image).unwrap();
+        assert_eq!(bas_alpha.dimensions(), image.dimensions());
+        let deep_manifest = bgremove_models::parse_toml(
+            &std::fs::read_to_string("../../models/m6_deeplabv3.toml").unwrap(),
+        )
+        .unwrap();
+        let deep = DeepLabV3Segmenter::new(
+            &deep_manifest,
+            Path::new("../../models/m6_deeplabv3.toml"),
+            Path::new(&runtime),
+            1,
+            requested,
+            false,
+        )
+        .unwrap();
+        let deep_alpha = deep.predict(&image).unwrap();
+        assert!(deep_alpha.data().iter().all(|v| *v == 0.0 || *v == 1.0));
+        let tracer_manifest = bgremove_models::parse_toml(
+            &std::fs::read_to_string("../../models/m6_tracer_b7.toml").unwrap(),
+        )
+        .unwrap();
+        let tracer = TracerB7Segmenter::new(
+            &tracer_manifest,
+            Path::new("../../models/m6_tracer_b7.toml"),
+            Path::new(&runtime),
+            1,
+            requested,
+            false,
+        )
+        .unwrap();
+        let tracer_alpha = tracer.predict(&image).unwrap();
+        assert_eq!(tracer_alpha.dimensions(), image.dimensions());
+    }
+
+    #[test]
+    #[ignore = "real M6 level-2 Rust/CarveKit parity; run explicitly with ORT_DYLIB and external ONNX weights"]
+    fn m6_real_level2_rust_matches_carvekit_fixtures() {
+        let runtime = std::env::var_os("ORT_DYLIB").expect("ORT_DYLIB required");
+        let root = Path::new("../../tests/fixtures/m6");
+        let parity_report: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("python-onnx-parity.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(parity_report["verdict"], true);
+        let tolerance = |path: &[&str]| -> f32 {
+            let mut value = &parity_report["tolerances"];
+            for key in path {
+                value = &value[*key];
+            }
+            value["value"].as_f64().unwrap() as f32
+        };
+        let read_f32 = |path: &Path| -> Vec<f32> {
+            std::fs::read(path)
+                .unwrap()
+                .chunks_exact(4)
+                .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect()
+        };
+        let image_for = |family: &str, case: &str| {
+            let geometry = case.split('-').next().unwrap();
+            let (width, height) = geometry.split_once('x').unwrap();
+            let width = width.parse::<u32>().unwrap();
+            let height = height.parse::<u32>().unwrap();
+            let values =
+                read_f32(&root.join(format!("reference/{family}/{case}/decoded-rgb.f32le")));
+            bgremove_core::CanonicalImage::new(
+                width,
+                height,
+                values
+                    .chunks_exact(3)
+                    .map(|px| [px[0], px[1], px[2]])
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let bas_manifest = bgremove_models::parse_toml(
+            &std::fs::read_to_string("../../models/m6_basnet.toml").unwrap(),
+        )
+        .unwrap();
+        let deep_manifest = bgremove_models::parse_toml(
+            &std::fs::read_to_string("../../models/m6_deeplabv3.toml").unwrap(),
+        )
+        .unwrap();
+        let tracer_manifest = bgremove_models::parse_toml(
+            &std::fs::read_to_string("../../models/m6_tracer_b7.toml").unwrap(),
+        )
+        .unwrap();
+        let bas = BasnetSegmenter::new(
+            &bas_manifest,
+            Path::new("../../models/m6_basnet.toml"),
+            Path::new(&runtime),
+            1,
+            RequestedProvider::Cpu,
+            false,
+        )
+        .unwrap();
+        let deep = DeepLabV3Segmenter::new(
+            &deep_manifest,
+            Path::new("../../models/m6_deeplabv3.toml"),
+            Path::new(&runtime),
+            1,
+            RequestedProvider::Cpu,
+            false,
+        )
+        .unwrap();
+        let tracer = TracerB7Segmenter::new(
+            &tracer_manifest,
+            Path::new("../../models/m6_tracer_b7.toml"),
+            Path::new(&runtime),
+            1,
+            RequestedProvider::Cpu,
+            false,
+        )
+        .unwrap();
+        for family in ["basnet", "deeplabv3", "tracer-b7"] {
+            for geometry in ["3x2", "2x3", "1025x3"] {
+                for range in ["low", "high"] {
+                    let case = format!("{geometry}-{range}");
+                    let image = image_for(family, &case);
+                    let (tensor, raw, restored) = match family {
+                        "basnet" => {
+                            let e = bas.predict_with_evidence(&image).unwrap();
+                            (e.tensor.values, e.raw_output.values, e.restored)
+                        }
+                        "deeplabv3" => {
+                            let e = deep.predict_with_evidence(&image).unwrap();
+                            (e.tensor.values, e.raw_output.values, e.restored)
+                        }
+                        "tracer-b7" => {
+                            let e = tracer.predict_with_evidence(&image).unwrap();
+                            (e.tensor.values, e.raw_output.values, e.restored)
+                        }
+                        _ => unreachable!(),
+                    };
+                    let dir = root.join(format!("reference/{family}/{case}"));
+                    let expected_tensor = read_f32(&dir.join("preprocessed-tensor.f32le"));
+                    let expected_raw = read_f32(&dir.join("raw-output.f32le"));
+                    let expected_alpha = read_f32(&dir.join("restored-alpha.f32le"));
+                    assert_eq!(
+                        tensor.len(),
+                        expected_tensor.len(),
+                        "{family} {case} tensor lengths"
+                    );
+                    assert_eq!(raw.len(), expected_raw.len(), "{family} {case} raw lengths");
+                    assert_eq!(
+                        restored.data().len(),
+                        expected_alpha.len(),
+                        "{family} {case} alpha lengths"
+                    );
+                    let max_delta = |left: &[f32], right: &[f32]| {
+                        left.iter()
+                            .zip(right)
+                            .map(|(a, b)| (a - b).abs())
+                            .fold(0.0f32, f32::max)
+                    };
+                    let tensor_delta = max_delta(&tensor, &expected_tensor);
+                    let tensor_mean = tensor
+                        .iter()
+                        .zip(&expected_tensor)
+                        .map(|(a, b)| (a - b).abs())
+                        .sum::<f32>()
+                        / tensor.len() as f32;
+                    let tensor_tolerance = tolerance(&["rust_tensor_max_abs", family]);
+                    assert!(
+                        tensor_delta <= tensor_tolerance,
+                        "{family} {case} tensor parity max_delta={tensor_delta} tolerance={tensor_tolerance}"
+                    );
+                    assert!(
+                        tensor_mean <= tolerance(&["rust_tensor_mean_abs"]),
+                        "{family} {case} tensor parity mean_delta={tensor_mean}"
+                    );
+                    let raw_delta = max_delta(&raw, &expected_raw);
+                    let raw_mean = raw
+                        .iter()
+                        .zip(&expected_raw)
+                        .map(|(a, b)| (a - b).abs())
+                        .sum::<f32>()
+                        / raw.len() as f32;
+                    assert!(
+                        raw_delta <= tolerance(&["rust_raw_max_abs"]),
+                        "{family} {case} raw parity max_delta={raw_delta}"
+                    );
+                    assert!(
+                        raw_mean <= tolerance(&["rust_raw_mean_abs"]),
+                        "{family} {case} raw parity mean_delta={raw_mean}"
+                    );
+                    assert!(
+                        max_delta(restored.data(), &expected_alpha)
+                            <= tolerance(&["rust_restored_max_abs"]),
+                        "{family} {case} restore max parity"
+                    );
+                    let restored_mean = restored
+                        .data()
+                        .iter()
+                        .zip(&expected_alpha)
+                        .map(|(a, b)| (a - b).abs())
+                        .sum::<f32>()
+                        / restored.data().len() as f32;
+                    assert!(
+                        restored_mean <= tolerance(&["rust_restored_mean_abs"]),
+                        "{family} {case} restore mean parity"
+                    );
+                    let expected_dir = root.join(format!("reference/{family}/{case}"));
+                    let actual_rgba = straight_rgba_bytes_for_test(&image, restored);
+                    let expected_rgba =
+                        std::fs::read(expected_dir.join("final-straight-alpha-cutout.rgba"))
+                            .unwrap();
+                    assert_eq!(
+                        actual_rgba.len(),
+                        expected_rgba.len(),
+                        "{family} {case} final RGBA length"
+                    );
+                    let mut alpha_max = 0u8;
+                    let mut alpha_sum = 0usize;
+                    for (index, (actual, expected)) in
+                        actual_rgba.iter().zip(&expected_rgba).enumerate()
+                    {
+                        if index % 4 != 3 {
+                            assert_eq!(
+                                actual, expected,
+                                "{family} {case} final RGB parity at {index}"
+                            );
+                        } else {
+                            let delta = actual.abs_diff(*expected);
+                            alpha_max = alpha_max.max(delta);
+                            alpha_sum += usize::from(delta);
+                        }
+                    }
+                    assert!(
+                        alpha_max
+                            <= parity_report["tolerances"]["final_cutout"]["max_abs"]
+                                .as_u64()
+                                .unwrap() as u8
+                    );
+                    assert!(
+                        (alpha_sum as f64 / (actual_rgba.len() / 4) as f64)
+                            <= parity_report["tolerances"]["final_cutout"]["mean_abs"]
+                                .as_f64()
+                                .unwrap()
+                    );
+                }
+            }
+        }
     }
 
     #[test]

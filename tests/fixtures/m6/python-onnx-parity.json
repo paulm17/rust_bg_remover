@@ -1,0 +1,697 @@
+{
+  "schema": "m6.carvekit-python-level2.v1",
+  "provenance": {
+    "carvekit_commit": "f141a311af67fb1da64269c508a6d1f786420801",
+    "tracked_source_clean": true,
+    "source_files": [
+      "carvekit/ml/wrap/basnet.py",
+      "carvekit/ml/wrap/deeplab_v3.py",
+      "carvekit/ml/wrap/tracer_b7.py"
+    ],
+    "source_file_sha256": {
+      "carvekit/ml/wrap/basnet.py": "c788ae2f6a823c5761bb213fa93fa444e90bef427e1a0112fc89703ca22ec6b8",
+      "carvekit/ml/wrap/deeplab_v3.py": "9331eefe57058b490a12ea2c2dffe06fced43f5e3bde8ed50aa3bfc2d36863fb",
+      "carvekit/ml/wrap/tracer_b7.py": "9161a734035a4eee2214a080ee3ddea86155eac9f0a2a9ab09d5556760a4c1c9"
+    },
+    "dependencies": {
+      "torch": "2.6.0",
+      "torchvision": "0.21.0",
+      "Pillow": "12.3.0",
+      "numpy": "2.5.2",
+      "onnxruntime": "1.23.2"
+    },
+    "checkpoints": {
+      "basnet": {
+        "path": "checkpoints/basnet.pth",
+        "sha512": "e409cb709f4abca87cb11bd44a9ad3f909044a917977ab65244b4c94dd338b1a37755c4253d7cb54526b7763622a094d7b676d34b5e6886689256754e5a5e6ad"
+      },
+      "deeplabv3": {
+        "path": "checkpoints/deeplab.pth",
+        "sha512": "9c5a1795bc8baa267200a44b49ac544a1ba2687d210f63777e4bd715387324469a59b072f8a289cc471c637b367932177e5b312e8ea6351c1763d9ff44b4857c"
+      },
+      "tracer-b7": {
+        "path": "checkpoints/tracer_b7.pth",
+        "sha512": "c439c5c12d4d43d5f9be9ec61e68b2e54658a541bccac2577ef5a54fb252b6e8415d41f7ec2487033d0c02b4dd08367958e4e62091318111c519f93e2632be7b"
+      }
+    },
+    "onnx": {
+      "basnet": {
+        "path": "projects/python/image-background-remove-tool/m6-onnx/basnet.onnx",
+        "sha256": "f20b2de9a108b92574cd6902ecade1721ee0607be7b46683794930392f49d838"
+      },
+      "deeplabv3": {
+        "path": "projects/python/image-background-remove-tool/m6-onnx/deeplab.onnx",
+        "sha256": "4683b7f27832c0d5576cc7b81c8522e029549002861267077df0f19e16a62cb3"
+      },
+      "tracer-b7": {
+        "path": "projects/python/image-background-remove-tool/m6-onnx/tracer_b7.onnx",
+        "sha256": "cab33cedb809050612a107a5a6b929dabeb04445a95b988be3f3203b0662fbad"
+      }
+    }
+  },
+  "python": {
+    "source": "CarveKit f141a311",
+    "torch": "2.6.0",
+    "onnxruntime": "1.23.2"
+  },
+  "source": {
+    "repository": "image-background-remove-tool",
+    "commit": "f141a311af67fb1da64269c508a6d1f786420801"
+  },
+  "coverage": {
+    "geometries": [
+      [
+        3,
+        2
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        1025,
+        3
+      ]
+    ],
+    "colour_ranges": [
+      "low",
+      "high"
+    ]
+  },
+  "tolerances": {
+    "onnx_raw_max_abs": {
+      "value": 0.001,
+      "units": "float32 alpha/logit units",
+      "justification": "Pinned PyTorch and ONNX Runtime CPU execution must agree within one-thousandth."
+    },
+    "onnx_raw_mean_abs": {
+      "value": 2e-06,
+      "units": "float32 alpha/logit units",
+      "justification": "Mean error gate catches broad drift while allowing CPU kernel rounding."
+    },
+    "rust_tensor_max_abs": {
+      "basnet": {
+        "value": 0.0001,
+        "units": "normalized ImageNet tensor units"
+      },
+      "deeplabv3": {
+        "value": 0.0001,
+        "units": "normalized ImageNet tensor units"
+      },
+      "tracer-b7": {
+        "value": 1e-05,
+        "units": "normalized ImageNet tensor units (0.00057 input-code values at std=0.224)",
+        "justification": "TRACER follows torchvision tensor bilinear half-pixel Resize with antialiasing; the observed 1.67e-6 maximum is sub-one-code and this tight bound guards resize semantics rather than hiding a mismatch."
+      }
+    },
+    "rust_tensor_mean_abs": {
+      "value": 0.001,
+      "units": "normalized ImageNet tensor units",
+      "justification": "Mean bound is applied in addition to the family max bound."
+    },
+    "rust_raw_max_abs": {
+      "value": 0.001,
+      "units": "float32 alpha/logit units"
+    },
+    "rust_raw_mean_abs": {
+      "value": 0.0001,
+      "units": "float32 alpha/logit units"
+    },
+    "rust_restored_max_abs": {
+      "value": 0.0039225686274509805,
+      "units": "alpha code values in [0,1]"
+    },
+    "rust_restored_mean_abs": {
+      "value": 0.0039225686274509805,
+      "units": "alpha code values in [0,1]"
+    },
+    "final_cutout": {
+      "mode": "rgba-byte-tolerance",
+      "max_abs": 1,
+      "mean_abs": 0.1,
+      "units": "RGBA uint8 code values",
+      "justification": "RGB remains exact; Pillow-version rounding can move restored alpha by at most one encoded code."
+    }
+  },
+  "records": [
+    {
+      "family": "basnet",
+      "case": "3x2-low",
+      "geometry": [
+        3,
+        2
+      ],
+      "colour_range": "low",
+      "input_tensor_shape": [
+        1,
+        3,
+        320,
+        320
+      ],
+      "raw_shape": [
+        1,
+        320,
+        320
+      ],
+      "onnx_raw_max_abs": 0.00021511316299438477,
+      "onnx_raw_mean_abs": 4.0622296637593536e-07,
+      "artifacts": {
+        "decoded-rgb.f32le": "8015a2642123bbdf06e6a4c11637d39f5e0909eee8df3927d7564aae9b060d70",
+        "final-straight-alpha-cutout.png": "1ac24aa3c2ef44a68841fa1c7b4becad930c2aaf8e0acac40db4e8c21925c42f",
+        "final-straight-alpha-cutout.rgba": "1d089e1e3730692a5b24fae1f1e009ed7da1060a8fdc92e766d6482a5e844294",
+        "raw-output.f32le": "ccadd1f964bf1dea8c78bb7a8fac752b51a2fe19b44fc11b2d31d9c004abdcf5",
+        "preprocessed-tensor.f32le": "f2f455147ec976f23efd04a0926c87e8cd287724603045db830daf7297ff0e47",
+        "restored-alpha.f32le": "59af20c60168ce3442b5e4c77aed515594e21eea85b63f68ff872d0085749ab2"
+      },
+      "verdict": true
+    },
+    {
+      "family": "deeplabv3",
+      "case": "3x2-low",
+      "geometry": [
+        3,
+        2
+      ],
+      "colour_range": "low",
+      "input_tensor_shape": [
+        1,
+        3,
+        2,
+        3
+      ],
+      "raw_shape": [
+        21,
+        2,
+        3
+      ],
+      "onnx_raw_max_abs": 2.384185791015625e-06,
+      "onnx_raw_mean_abs": 4.1350722312927246e-07,
+      "artifacts": {
+        "decoded-rgb.f32le": "8015a2642123bbdf06e6a4c11637d39f5e0909eee8df3927d7564aae9b060d70",
+        "final-straight-alpha-cutout.png": "dd55fd7fd61dabcb9ea1b4dee3448aebefe16cb943028474d31010a5973dd03b",
+        "final-straight-alpha-cutout.rgba": "0324679312f7a601027cf0a974ffd3b0b2edfd8ee2ca2ef6b0809b143c7e5270",
+        "raw-output.f32le": "7e305566a2ab7b8deca665b748281455d7923f3fe0cdc59b4dfebb16aebcaf44",
+        "preprocessed-tensor.f32le": "789ffa7b7a2203911069514a1c10f1fd20775edb72bbb2836c06700659cf9182",
+        "restored-alpha.f32le": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0"
+      },
+      "verdict": true
+    },
+    {
+      "family": "tracer-b7",
+      "case": "3x2-low",
+      "geometry": [
+        3,
+        2
+      ],
+      "colour_range": "low",
+      "input_tensor_shape": [
+        1,
+        3,
+        640,
+        640
+      ],
+      "raw_shape": [
+        1,
+        640,
+        640
+      ],
+      "onnx_raw_max_abs": 1.3673889043275267e-07,
+      "onnx_raw_mean_abs": 2.5979183249091875e-08,
+      "artifacts": {
+        "decoded-rgb.f32le": "8015a2642123bbdf06e6a4c11637d39f5e0909eee8df3927d7564aae9b060d70",
+        "final-straight-alpha-cutout.png": "dd55fd7fd61dabcb9ea1b4dee3448aebefe16cb943028474d31010a5973dd03b",
+        "final-straight-alpha-cutout.rgba": "0324679312f7a601027cf0a974ffd3b0b2edfd8ee2ca2ef6b0809b143c7e5270",
+        "raw-output.f32le": "dc8c73641328555cb1a94da324c41b7c1fb24d04f42e7d66fa56496bd51df0b6",
+        "preprocessed-tensor.f32le": "92fe7a71ccaa7dfa841b8984a5d383482fbe999d6261505c0861cb3ff7b70d71",
+        "restored-alpha.f32le": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0"
+      },
+      "verdict": true
+    },
+    {
+      "family": "basnet",
+      "case": "3x2-high",
+      "geometry": [
+        3,
+        2
+      ],
+      "colour_range": "high",
+      "input_tensor_shape": [
+        1,
+        3,
+        320,
+        320
+      ],
+      "raw_shape": [
+        1,
+        320,
+        320
+      ],
+      "onnx_raw_max_abs": 1.8435821402817965e-07,
+      "onnx_raw_mean_abs": 2.674696197857429e-08,
+      "artifacts": {
+        "decoded-rgb.f32le": "377aa5b000582b56ae33ae9bafd1cf9a99e3ec01c8c82008a7bcd34f87245b43",
+        "final-straight-alpha-cutout.png": "a13247331f5f355bbd4d7e0a8944477a964533452f4c46fd5305c17df388ab64",
+        "final-straight-alpha-cutout.rgba": "9f86eef785c9953b1fa24f41d8b80b214ca64443800d1547242c5796b4727d2d",
+        "raw-output.f32le": "8bea6bf6bb30334e627c54a96369d30b2fb28179a317c31153172bb309cee3c4",
+        "preprocessed-tensor.f32le": "4bf31f43eddc35a9a8f31574c37e416a3dee265c5fb52f76648fc49d7f3306aa",
+        "restored-alpha.f32le": "bfcae492c77fca433510d7a188f2135183f94d49d259ca39d88352fcaca00168"
+      },
+      "verdict": true
+    },
+    {
+      "family": "deeplabv3",
+      "case": "3x2-high",
+      "geometry": [
+        3,
+        2
+      ],
+      "colour_range": "high",
+      "input_tensor_shape": [
+        1,
+        3,
+        2,
+        3
+      ],
+      "raw_shape": [
+        21,
+        2,
+        3
+      ],
+      "onnx_raw_max_abs": 2.1457672119140625e-06,
+      "onnx_raw_mean_abs": 3.96506891320314e-07,
+      "artifacts": {
+        "decoded-rgb.f32le": "377aa5b000582b56ae33ae9bafd1cf9a99e3ec01c8c82008a7bcd34f87245b43",
+        "final-straight-alpha-cutout.png": "b1cd393e7bca0d227d2891307690f88eac0bedf5ca2f1a7d958ac1a64f208bcf",
+        "final-straight-alpha-cutout.rgba": "c63c7d7841bf71bc7ec0916357ab67578287378fe3e95b1d44c316eae161d032",
+        "raw-output.f32le": "807b2cfaa038d3b31bcd80629d02e73f86e7b841474d13991ebcbd58c37a92c7",
+        "preprocessed-tensor.f32le": "0457c5ee009a3aea54a679c216aacd937b9af0f2e82f4bde3f886b4f185babcf",
+        "restored-alpha.f32le": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0"
+      },
+      "verdict": true
+    },
+    {
+      "family": "tracer-b7",
+      "case": "3x2-high",
+      "geometry": [
+        3,
+        2
+      ],
+      "colour_range": "high",
+      "input_tensor_shape": [
+        1,
+        3,
+        640,
+        640
+      ],
+      "raw_shape": [
+        1,
+        640,
+        640
+      ],
+      "onnx_raw_max_abs": 1.4072838894207962e-07,
+      "onnx_raw_mean_abs": 2.6559559884731243e-08,
+      "artifacts": {
+        "decoded-rgb.f32le": "377aa5b000582b56ae33ae9bafd1cf9a99e3ec01c8c82008a7bcd34f87245b43",
+        "final-straight-alpha-cutout.png": "b1cd393e7bca0d227d2891307690f88eac0bedf5ca2f1a7d958ac1a64f208bcf",
+        "final-straight-alpha-cutout.rgba": "c63c7d7841bf71bc7ec0916357ab67578287378fe3e95b1d44c316eae161d032",
+        "raw-output.f32le": "91fce6e320eeedf7d223bff8592e4913f1a361f8d10fa7ba65605fc2a0955a1a",
+        "preprocessed-tensor.f32le": "8f36d952842fa6482f63ed864c99c511c88143e94c8b18e84709a46301df3480",
+        "restored-alpha.f32le": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0"
+      },
+      "verdict": true
+    },
+    {
+      "family": "basnet",
+      "case": "2x3-low",
+      "geometry": [
+        2,
+        3
+      ],
+      "colour_range": "low",
+      "input_tensor_shape": [
+        1,
+        3,
+        320,
+        320
+      ],
+      "raw_shape": [
+        1,
+        320,
+        320
+      ],
+      "onnx_raw_max_abs": 0.00024139881134033203,
+      "onnx_raw_mean_abs": 2.6947134301735787e-07,
+      "artifacts": {
+        "decoded-rgb.f32le": "0a4715e4dced4e518215fd068fca7b0df1a0be0aca0e5ecf1654cb99287bedc4",
+        "final-straight-alpha-cutout.png": "5a137214ba46cad993079d8d10ddf89b782094832c839d372adcc9f39f504392",
+        "final-straight-alpha-cutout.rgba": "44639eed364ed31ef485b4ec6b1b1db1c0ad72dd213e7803937d178b62dbdd62",
+        "raw-output.f32le": "a90de4b8f06c0d291a9b6937e4bd8d0b25f5495a29295e28a6516e67ea2192bb",
+        "preprocessed-tensor.f32le": "f2e4b169ab1a59c55993ea6f04e8629817a3f553035bf8a6be08f6503b67af24",
+        "restored-alpha.f32le": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0"
+      },
+      "verdict": true
+    },
+    {
+      "family": "deeplabv3",
+      "case": "2x3-low",
+      "geometry": [
+        2,
+        3
+      ],
+      "colour_range": "low",
+      "input_tensor_shape": [
+        1,
+        3,
+        3,
+        2
+      ],
+      "raw_shape": [
+        21,
+        3,
+        2
+      ],
+      "onnx_raw_max_abs": 2.6226043701171875e-06,
+      "onnx_raw_mean_abs": 6.092919306865952e-07,
+      "artifacts": {
+        "decoded-rgb.f32le": "0a4715e4dced4e518215fd068fca7b0df1a0be0aca0e5ecf1654cb99287bedc4",
+        "final-straight-alpha-cutout.png": "5a137214ba46cad993079d8d10ddf89b782094832c839d372adcc9f39f504392",
+        "final-straight-alpha-cutout.rgba": "44639eed364ed31ef485b4ec6b1b1db1c0ad72dd213e7803937d178b62dbdd62",
+        "raw-output.f32le": "8858a98f66b0b1320b5e9e2d1684a7e4d916bd2e6d950eb0260ca56eef41e062",
+        "preprocessed-tensor.f32le": "f71de40c38faa1ef6b70250694dceb83a73e659762d99e476625ffacf652e472",
+        "restored-alpha.f32le": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0"
+      },
+      "verdict": true
+    },
+    {
+      "family": "tracer-b7",
+      "case": "2x3-low",
+      "geometry": [
+        2,
+        3
+      ],
+      "colour_range": "low",
+      "input_tensor_shape": [
+        1,
+        3,
+        640,
+        640
+      ],
+      "raw_shape": [
+        1,
+        640,
+        640
+      ],
+      "onnx_raw_max_abs": 1.372396809529164e-07,
+      "onnx_raw_mean_abs": 2.5896879307651943e-08,
+      "artifacts": {
+        "decoded-rgb.f32le": "0a4715e4dced4e518215fd068fca7b0df1a0be0aca0e5ecf1654cb99287bedc4",
+        "final-straight-alpha-cutout.png": "5a137214ba46cad993079d8d10ddf89b782094832c839d372adcc9f39f504392",
+        "final-straight-alpha-cutout.rgba": "44639eed364ed31ef485b4ec6b1b1db1c0ad72dd213e7803937d178b62dbdd62",
+        "raw-output.f32le": "39c9d1659ffaaec11898b5a887b4efe6e67d88f6f915dfee6f22f848740f464d",
+        "preprocessed-tensor.f32le": "684c4184613b8944c3d0d0dc4b939d53980cffca1a9d76a36e326d962b345078",
+        "restored-alpha.f32le": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0"
+      },
+      "verdict": true
+    },
+    {
+      "family": "basnet",
+      "case": "2x3-high",
+      "geometry": [
+        2,
+        3
+      ],
+      "colour_range": "high",
+      "input_tensor_shape": [
+        1,
+        3,
+        320,
+        320
+      ],
+      "raw_shape": [
+        1,
+        320,
+        320
+      ],
+      "onnx_raw_max_abs": 5.832407623529434e-07,
+      "onnx_raw_mean_abs": 3.517041591294401e-08,
+      "artifacts": {
+        "decoded-rgb.f32le": "3c39f8cf4b9fd8663dab82c5803dffe52b86763ef3c18e1e24e16ef2462bdff0",
+        "final-straight-alpha-cutout.png": "f11446ef9c7d5a5e09eb1ccaca428dceca30c8c5a0e353d53875ef27b72d3030",
+        "final-straight-alpha-cutout.rgba": "5187b0136dbe6fd297b425d14d425d5e92297c429af885ca7fa17afc6aa55976",
+        "raw-output.f32le": "28accb52825eb3510890ddb71cfbef57fa4eb9e91667191f30baae64f3931272",
+        "preprocessed-tensor.f32le": "4b30d190f026b515ad191edad86170128562bf03b54541f041a531489a4a673c",
+        "restored-alpha.f32le": "365f5401dc43c1dc885a5a3226d37b1138216fac34d88d845a009c14223125d6"
+      },
+      "verdict": true
+    },
+    {
+      "family": "deeplabv3",
+      "case": "2x3-high",
+      "geometry": [
+        2,
+        3
+      ],
+      "colour_range": "high",
+      "input_tensor_shape": [
+        1,
+        3,
+        3,
+        2
+      ],
+      "raw_shape": [
+        21,
+        3,
+        2
+      ],
+      "onnx_raw_max_abs": 1.0728836059570312e-06,
+      "onnx_raw_mean_abs": 4.447286983122467e-07,
+      "artifacts": {
+        "decoded-rgb.f32le": "3c39f8cf4b9fd8663dab82c5803dffe52b86763ef3c18e1e24e16ef2462bdff0",
+        "final-straight-alpha-cutout.png": "63eecc4cbc8e44b5834643976e00a7199ffd15e3a646be1b2966ef50fd9dd6a7",
+        "final-straight-alpha-cutout.rgba": "d0919e72d5bd5e60553b4014bb8f40c3e98b66431b1d1a456063ecc47bfa4e85",
+        "raw-output.f32le": "fc5ae50aa1be618d5c41eea78e8540c678ff6ceff73cc717b8a91e1179a2c701",
+        "preprocessed-tensor.f32le": "b816f16a92279f43228b1a313c122efae5512745bbb2e56adc77ccb44d7f3c98",
+        "restored-alpha.f32le": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0"
+      },
+      "verdict": true
+    },
+    {
+      "family": "tracer-b7",
+      "case": "2x3-high",
+      "geometry": [
+        2,
+        3
+      ],
+      "colour_range": "high",
+      "input_tensor_shape": [
+        1,
+        3,
+        640,
+        640
+      ],
+      "raw_shape": [
+        1,
+        640,
+        640
+      ],
+      "onnx_raw_max_abs": 1.4620081856264733e-07,
+      "onnx_raw_mean_abs": 2.6496683958043832e-08,
+      "artifacts": {
+        "decoded-rgb.f32le": "3c39f8cf4b9fd8663dab82c5803dffe52b86763ef3c18e1e24e16ef2462bdff0",
+        "final-straight-alpha-cutout.png": "63eecc4cbc8e44b5834643976e00a7199ffd15e3a646be1b2966ef50fd9dd6a7",
+        "final-straight-alpha-cutout.rgba": "d0919e72d5bd5e60553b4014bb8f40c3e98b66431b1d1a456063ecc47bfa4e85",
+        "raw-output.f32le": "6f8f89397ba0074e01d2376689a711839fe262cfe719f9bde8df58554ee693cc",
+        "preprocessed-tensor.f32le": "09d626547345e75fe7b6590d440473787c99f0a66e6e345321322771616562da",
+        "restored-alpha.f32le": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0"
+      },
+      "verdict": true
+    },
+    {
+      "family": "basnet",
+      "case": "1025x3-low",
+      "geometry": [
+        1025,
+        3
+      ],
+      "colour_range": "low",
+      "input_tensor_shape": [
+        1,
+        3,
+        320,
+        320
+      ],
+      "raw_shape": [
+        1,
+        320,
+        320
+      ],
+      "onnx_raw_max_abs": 2.5466084480285645e-05,
+      "onnx_raw_mean_abs": 3.3642709951209326e-08,
+      "artifacts": {
+        "decoded-rgb.f32le": "11d8a8705f8177441581f11e91e0554cc791bd52d9add87dc53b76698a4787af",
+        "final-straight-alpha-cutout.png": "7bdeff8e06565d3e616092ac097d263d8bd9c9f9b3abb66baad8e936edd974a0",
+        "final-straight-alpha-cutout.rgba": "2b29504d8d88149e2806c2a9e8a93cdd0fc352b85581532bd950a73e065bfde6",
+        "raw-output.f32le": "2d04a03a0365ef3adb39510fbbd7251edf81c470194acc70a01322c0bf4a253e",
+        "preprocessed-tensor.f32le": "641135046b9895326ecd9062f32901766fa564e0fcd26f4cb621a2d72abec621",
+        "restored-alpha.f32le": "cf775e4ea760417c4477bd5ba94165ec0351b80c012ef401d7cccdd240b9778e"
+      },
+      "verdict": true
+    },
+    {
+      "family": "deeplabv3",
+      "case": "1025x3-low",
+      "geometry": [
+        1025,
+        3
+      ],
+      "colour_range": "low",
+      "input_tensor_shape": [
+        1,
+        3,
+        3,
+        1024
+      ],
+      "raw_shape": [
+        21,
+        3,
+        1024
+      ],
+      "onnx_raw_max_abs": 4.291534423828125e-06,
+      "onnx_raw_mean_abs": 4.812973202206194e-07,
+      "artifacts": {
+        "decoded-rgb.f32le": "11d8a8705f8177441581f11e91e0554cc791bd52d9add87dc53b76698a4787af",
+        "final-straight-alpha-cutout.png": "fde5099f948c7180228a1e5ca8c9ccba1f6976251bfd8c0ecebf2134c77795bd",
+        "final-straight-alpha-cutout.rgba": "90df267eb633a9a08176658df6434d92e57d9955653b444fea8b551e21c244a9",
+        "raw-output.f32le": "0c0424e5e467431a461f2aeed33538a34b7d7fd8b97a81fae5dd6f8fd54d34f9",
+        "preprocessed-tensor.f32le": "fbe87b3d0f4840c679d1b7a4d8e4da0ca485972a2bf23c7d50edd82b2db818d8",
+        "restored-alpha.f32le": "98b61596157a6c3de482d71dcfbb1e097e6e6fefda61f8f8b5039dab3ac49634"
+      },
+      "verdict": true
+    },
+    {
+      "family": "tracer-b7",
+      "case": "1025x3-low",
+      "geometry": [
+        1025,
+        3
+      ],
+      "colour_range": "low",
+      "input_tensor_shape": [
+        1,
+        3,
+        640,
+        640
+      ],
+      "raw_shape": [
+        1,
+        640,
+        640
+      ],
+      "onnx_raw_max_abs": 1.3155241163076425e-07,
+      "onnx_raw_mean_abs": 2.6277549025621738e-08,
+      "artifacts": {
+        "decoded-rgb.f32le": "11d8a8705f8177441581f11e91e0554cc791bd52d9add87dc53b76698a4787af",
+        "final-straight-alpha-cutout.png": "fde5099f948c7180228a1e5ca8c9ccba1f6976251bfd8c0ecebf2134c77795bd",
+        "final-straight-alpha-cutout.rgba": "90df267eb633a9a08176658df6434d92e57d9955653b444fea8b551e21c244a9",
+        "raw-output.f32le": "eedab695c94b8943ce49bb3283b46e50050ee3ce0272e2a94b396fc34752c717",
+        "preprocessed-tensor.f32le": "973600548e681714d697f474f3b997222145c7bb62b8f3833c2872eb22158650",
+        "restored-alpha.f32le": "98b61596157a6c3de482d71dcfbb1e097e6e6fefda61f8f8b5039dab3ac49634"
+      },
+      "verdict": true
+    },
+    {
+      "family": "basnet",
+      "case": "1025x3-high",
+      "geometry": [
+        1025,
+        3
+      ],
+      "colour_range": "high",
+      "input_tensor_shape": [
+        1,
+        3,
+        320,
+        320
+      ],
+      "raw_shape": [
+        1,
+        320,
+        320
+      ],
+      "onnx_raw_max_abs": 1.377484011300112e-07,
+      "onnx_raw_mean_abs": 2.2993576820340422e-08,
+      "artifacts": {
+        "decoded-rgb.f32le": "f1c9703be0231caa3a46dfcd89bdd73487454477e2ec5235cd10acfe1635f979",
+        "final-straight-alpha-cutout.png": "4d770d82124f398cb9bd1204d2300cda51429805bb309fd969d8c10a24539bf2",
+        "final-straight-alpha-cutout.rgba": "1d491fe48ae1221127355b5199a7adbd55427beed3b9d798bd52818164c7471f",
+        "raw-output.f32le": "a637557e5eee0f86b87f784bb598d2f7a444b9d0518fab462fe8eb15a1126793",
+        "preprocessed-tensor.f32le": "1685b6583c9b6b3e35444bd33353f37414f7f3c204c7a775eb73a879cb4c1547",
+        "restored-alpha.f32le": "75a5a4093d15044c40b58ce68001ccac98fd1a106e2b7a7cbc525a7ebef7cb79"
+      },
+      "verdict": true
+    },
+    {
+      "family": "deeplabv3",
+      "case": "1025x3-high",
+      "geometry": [
+        1025,
+        3
+      ],
+      "colour_range": "high",
+      "input_tensor_shape": [
+        1,
+        3,
+        3,
+        1024
+      ],
+      "raw_shape": [
+        21,
+        3,
+        1024
+      ],
+      "onnx_raw_max_abs": 5.7220458984375e-06,
+      "onnx_raw_mean_abs": 5.240684117779892e-07,
+      "artifacts": {
+        "decoded-rgb.f32le": "f1c9703be0231caa3a46dfcd89bdd73487454477e2ec5235cd10acfe1635f979",
+        "final-straight-alpha-cutout.png": "3b6b0b8c010d6302a2a4743344313c360bcf40b57aeb751004bdb4733ce89b13",
+        "final-straight-alpha-cutout.rgba": "58a39fbd4201714d61276653650ed3410eb8a8d2b3fefbb36e630803be47dff2",
+        "raw-output.f32le": "f2e221dd0ad1f0bd000918dfc3122dd251a4a4643870a49369c51b8337971183",
+        "preprocessed-tensor.f32le": "6fbc441a310aaa38a9e6474e37a1a941b34b890db45b2b357fa95b7f3427f991",
+        "restored-alpha.f32le": "98b61596157a6c3de482d71dcfbb1e097e6e6fefda61f8f8b5039dab3ac49634"
+      },
+      "verdict": true
+    },
+    {
+      "family": "tracer-b7",
+      "case": "1025x3-high",
+      "geometry": [
+        1025,
+        3
+      ],
+      "colour_range": "high",
+      "input_tensor_shape": [
+        1,
+        3,
+        640,
+        640
+      ],
+      "raw_shape": [
+        1,
+        640,
+        640
+      ],
+      "onnx_raw_max_abs": 1.3525050235330127e-07,
+      "onnx_raw_mean_abs": 2.6201821157201266e-08,
+      "artifacts": {
+        "decoded-rgb.f32le": "f1c9703be0231caa3a46dfcd89bdd73487454477e2ec5235cd10acfe1635f979",
+        "final-straight-alpha-cutout.png": "3b6b0b8c010d6302a2a4743344313c360bcf40b57aeb751004bdb4733ce89b13",
+        "final-straight-alpha-cutout.rgba": "58a39fbd4201714d61276653650ed3410eb8a8d2b3fefbb36e630803be47dff2",
+        "raw-output.f32le": "52bea0704ed6bdb0e3daf583186f687d5875475fa6fffe1eb42b034c7067bef2",
+        "preprocessed-tensor.f32le": "7843cdb4d4c9b6fc989512f3e4805e3d03c2ec437c137668f5e15c2fd81f72b1",
+        "restored-alpha.f32le": "98b61596157a6c3de482d71dcfbb1e097e6e6fefda61f8f8b5039dab3ac49634"
+      },
+      "verdict": true
+    }
+  ],
+  "verdict": true
+}

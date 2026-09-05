@@ -14,7 +14,7 @@ macro_rules! string_enum {
 }
 
 string_enum!(ModelLayout { Nchw => "nchw", Nhwc => "nhwc" });
-string_enum!(AspectPolicy { Stretch => "stretch", Identity => "identity", Dynamic => "dynamic" });
+string_enum!(AspectPolicy { Stretch => "stretch", Identity => "identity", Dynamic => "dynamic", Thumbnail => "thumbnail" });
 string_enum!(ResizeFilter { Nearest => "nearest", Bilinear => "bilinear", Triangle => "triangle", Bicubic => "bicubic", Lanczos3 => "lanczos3" });
 string_enum!(ChannelOrder { Rgb => "rgb", Bgr => "bgr" });
 string_enum!(Activation { None => "none", Sigmoid => "sigmoid" });
@@ -167,6 +167,10 @@ pub struct ModelManifest {
     pub output_type: Option<TensorElementType>,
     #[serde(default)]
     pub output_index: Option<usize>,
+    /// Semantic labels for multi-class outputs.  M6 DeepLabV3 is deliberately
+    /// explicit about class 0/1 rather than inferring foreground polarity.
+    #[serde(default)]
+    pub class_mapping: Option<Vec<String>>,
     /// Algorithm family is intentionally separate from deployment encoding.
     #[serde(default = "default_algorithm_family")]
     pub algorithm_family: String,
@@ -203,10 +207,20 @@ impl ModelManifest {
             .ok_or_else(|| anyhow::anyhow!("manifest has no workspace parent"))?;
         let root = match self.algorithm_family.as_str() {
             "u2net" => workspace.join("projects/python/rembg"),
+            "basnet" | "deeplabv3" | "tracer-b7" => {
+                workspace.join("projects/python/image-background-remove-tool")
+            }
             _ => workspace.join("projects/javascript/background-removal-js"),
         };
         let allowed = match kind {
-            "model" if self.algorithm_family == "u2net" => root.clone(),
+            "model"
+                if matches!(
+                    self.algorithm_family.as_str(),
+                    "u2net" | "basnet" | "deeplabv3" | "tracer-b7"
+                ) =>
+            {
+                root.clone()
+            }
             "model" => root.join("bundle/models"),
             "license" => root,
             _ => unreachable!(),
@@ -389,6 +403,7 @@ impl std::fmt::Display for AspectPolicy {
                 Self::Stretch => "stretch",
                 Self::Identity => "identity",
                 Self::Dynamic => "dynamic",
+                Self::Thumbnail => "thumbnail",
             }
         )
     }
@@ -517,5 +532,37 @@ mod tests {
             .iter()
             .all(|m| m.model_encoding == ModelEncoding::Fp32));
         assert!(manifests.iter().all(|m| m.output_index == Some(0)));
+    }
+
+    #[test]
+    fn m6_carvekit_registry_pins_three_real_adapters_and_no_hair_checkpoint() {
+        let paths = [
+            "../../models/m6_basnet.toml",
+            "../../models/m6_deeplabv3.toml",
+            "../../models/m6_tracer_b7.toml",
+        ];
+        let manifests = paths
+            .iter()
+            .map(|path| parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            manifests
+                .iter()
+                .map(|manifest| manifest.algorithm_family.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["basnet", "deeplabv3", "tracer-b7"]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+        assert_eq!(
+            manifests[0].output_normalization,
+            OutputNormalization::MinMax
+        );
+        assert_eq!(manifests[1].aspect, AspectPolicy::Thumbnail);
+        assert_eq!(manifests[1].class_mapping.as_ref().unwrap().len(), 21);
+        assert_eq!(manifests[2].output_normalization, OutputNormalization::None);
+        assert!(manifests.iter().all(|manifest| manifest.external));
+        assert!(manifests.iter().all(|manifest| manifest.sha256.len() == 64));
+        assert!(paths.iter().all(|path| std::path::Path::new(path).exists()));
     }
 }
