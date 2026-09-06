@@ -17,5 +17,9 @@ image.workspace = true
 
 [features]
 default = []
+# BRIA's checkpoint licence is restrictive.  Consumers shipping a commercial
+# binary can build with --no-default-features to remove the BRIA ONNX adapter;
+# the deterministic tensor helpers remain available for parity tests.
+bria = []
 coreml = ["ort/coreml"]
 cuda = ["ort/cuda"]

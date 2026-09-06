@@ -1,0 +1,175 @@
+{
+  "deterministic": true,
+  "gates": {
+    "authoritative_synthetic_sources_executed": true,
+    "available_models_executed": false,
+    "bria_checkpoints_executed": false,
+    "constant_output_safe": true,
+    "nonfinite_output_rejected": true,
+    "raw_alpha_no_cleanup": true,
+    "runtime_downloads": false,
+    "rust_profile_and_rembg_profile_separate": true,
+    "unapproved_weights_disabled": true
+  },
+  "level2_fixture": {
+    "parity": {
+      "authoritative_sources_executed": true,
+      "profiles": [
+        {
+          "input_dimensions": [
+            3,
+            2
+          ],
+          "model_output_shape": [
+            1,
+            3,
+            1024,
+            1024
+          ],
+          "profile": "rmbg-rust",
+          "stages": {
+            "decoded-rgb.f32le": "3d3e4d8ac30cb0bde5603ba33f1ae6d419bb687435a8b09b959a6e300420db0b",
+            "final-straight-alpha-cutout.rgba": "6132a88429e568c0f08b53c90164f8ff781487163aa1be6ad0f79d71796e27ea",
+            "preprocessed-tensor.f32le": "f5b2a9b5a52b3bab6403dcd1748812418e1c6fab4330ae3822bff548adaad086",
+            "raw-onnx-output.f32le": "f5b2a9b5a52b3bab6403dcd1748812418e1c6fab4330ae3822bff548adaad086",
+            "restored-alpha.f32le": "2f88457c13bf8999846e4f9c1a7a5f9b08fe215ce194b834a6804853d773eb0e"
+          }
+        },
+        {
+          "input_dimensions": [
+            3,
+            2
+          ],
+          "model_output_shape": [
+            1,
+            3,
+            1024,
+            1024
+          ],
+          "profile": "rembg-bria",
+          "stages": {
+            "decoded-rgb.f32le": "3d3e4d8ac30cb0bde5603ba33f1ae6d419bb687435a8b09b959a6e300420db0b",
+            "final-straight-alpha-cutout.rgba": "ca480e4728c019963897bb47ef11753430d774301ab5141c687e944b28dc20d5",
+            "preprocessed-tensor.f32le": "9f7b6a6ed49b900fe86d5d4792ab6f4290664facd70f61a71bbbd96446b3e3ae",
+            "raw-onnx-output.f32le": "be920b7b113fdd535768f9dc47fce4b4d4d00f0e4943993387f908df7dd9de98",
+            "restored-alpha.f32le": "4b860105f9091fe8cd78252e40336f7fb0cbaec869f0c2296c483d8f9eb7a18a"
+          }
+        }
+      ],
+      "schema": "m8.rmbg-profile-fixture.v2",
+      "source": {
+        "authoritative_reports": [
+          "tests/fixtures/m8/authoritative/rust-rmbg/report.json",
+          "tests/fixtures/m8/authoritative/report.json"
+        ],
+        "rembg_commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+        "rust_instrumentation_patch_sha256": "14535186936f2e72c073119ee2461c1ee394b8ffd957b1fd131bf80b100b7856",
+        "rust_rmbg_commit": "8ce479cac1f2940502da1a55e19d19183f4862f7",
+        "rust_tracked_source_clean": true
+      },
+      "tolerances": {
+        "decoded_rgb": 0.0,
+        "final_cutout": 0.0,
+        "preprocessed_tensor": 0.00002,
+        "raw_output": 0.0,
+        "restored_alpha": 0.0
+      },
+      "weights_status": "excluded-by-license-and-not-present"
+    },
+    "path": "tests/fixtures/m8/reference/parity.json",
+    "sha256": "5e764212ed081f8ff8e6f7f07927ef64b526f47a338411d6a004a4bb40dd7336"
+  },
+  "models": [
+    {
+      "available": false,
+      "exclusion": "checkpoint is not present and commercial approval is not supplied",
+      "id": "rmbg-1.4@briaai",
+      "intended_use_approved": false,
+      "license_identifier": "bria-rmbg-1.4",
+      "manifest": "models/m8_rmbg_1_4.toml",
+      "manifest_sha256": "a446ba4de95e817460610e545750584801c3eb692fa8a9feaa8e8cf981aa9a6b",
+      "model_sha256": "8cafcf770b06757c4eaced21b1a88e57fd2b66de01b8045f35f01535ba742e0f",
+      "status": "excluded-license"
+    },
+    {
+      "available": false,
+      "exclusion": "checkpoint is not present and commercial approval is not supplied",
+      "id": "rmbg-2.0@rembg-v0.0.0",
+      "intended_use_approved": false,
+      "license_identifier": "CC BY-NC 4.0; commercial agreement required",
+      "manifest": "models/m8_rmbg_2_0.toml",
+      "manifest_sha256": "9351bae0bfa9138830c91f44ba13dda24ce3be49a34fedba70c4f4230338b3b2",
+      "model_sha256": "5b486f08200f513f460da46dd701db5fbb47d79b4be4b708a19444bcd4e79958",
+      "status": "excluded-license"
+    }
+  ],
+  "schema": "m8.rmbg-raw-alpha-tournament.v1",
+  "source_profiles": [
+    {
+      "commit": "8ce479cac1f2940502da1a55e19d19183f4862f7",
+      "contract": "RGBA alpha-premultiplied fast_image_resize bilinear stretch; RGB NCHW; value minus 0.5; output0/channel0; output min/max; bilinear restore",
+      "name": "rust-rmbg-crate",
+      "repository": "projects/rust/rmbg",
+      "source_file_sha256": "f9fc3538d1e167bc30268dae85d664fa59a97897eab65024fcb04d5eca248417"
+    },
+    {
+      "commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "contract": "Pillow LANCZOS RGB stretch; resized-image global max; ImageNet; output0/channel0; output min/max; Pillow LANCZOS restore",
+      "name": "rembg-bria-python",
+      "repository": "projects/python/rembg",
+      "source_file_sha256": "e3c3747be5af3db15597796a83e73cfa5c464bb5df9c2b047c4113c4bfc3f811"
+    }
+  ],
+  "status": "fixture-only",
+  "tournament": {
+    "candidates": [
+      "rmbg-1.4@briaai",
+      "rmbg-2.0@rembg-v0.0.0"
+    ],
+    "definition": {
+      "candidates": [
+        "u2net",
+        "isnet",
+        "basnet",
+        "deeplabv3",
+        "tracer-b7"
+      ],
+      "identical_downstream": true,
+      "metrics": {
+        "alpha_mae": "mean(abs(candidate_alpha - reference_alpha)) over canonical pixels; lower is better; units=alpha in [0,1]",
+        "soft_iou": "sum(min(candidate_alpha, reference_alpha)) / sum(max(candidate_alpha, reference_alpha)); higher is better; units=unitless"
+      },
+      "reference": "explicit --reference RGBA alpha paired with explicit --input RGB",
+      "shared_downstream": "raw alpha, canonical dimensions, straight-alpha original RGB, no cleanup/refiner"
+    },
+    "downstream": "raw restored alpha, canonical dimensions, straight-alpha original RGB, no cleanup/refiner",
+    "identical_downstream": true,
+    "metrics": {
+      "alpha_mae": "not run",
+      "soft_iou": "not run"
+    },
+    "results": [
+      {
+        "candidate": "rmbg-1.4@briaai",
+        "metrics": null,
+        "status": "excluded-license"
+      },
+      {
+        "candidate": "rmbg-2.0@rembg-v0.0.0",
+        "metrics": null,
+        "status": "excluded-license"
+      }
+    ],
+    "scores": [],
+    "shared_input": {
+      "decoded_rgb_sha256": "a47fde6070b2d1caf656d27e60eb23d1ac7f53e3eb20efc63a10d77615d60a3f",
+      "file_sha256": "feaad27d299d1c3d684da58fc664296811558a17ed5934c758a55269dbd2946b",
+      "path": "test_images/reference/1.png"
+    },
+    "shared_reference": {
+      "decoded_alpha_sha256": "c491765d61e4abf9df9a96020cf7ab42890a433df9330e7100e41105d91b7bc7",
+      "file_sha256": "c1f624a2bfb39d434c7464d1efe1e0391b4ffc6fee5dda994e6ddbfdcf3b7059",
+      "path": "test_images/photoroom/1.png"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+Checkpoint licence metadata for BRIA RMBG-1.4 (not the upstream licence text).
+
+Upstream model card: https://huggingface.co/briaai/RMBG-1.4
+Licence identifier: bria-rmbg-1.4
+The checkpoint is not included. Commercial use requires permission from BRIA.
+This file grants no rights and is only a pinned provenance record.

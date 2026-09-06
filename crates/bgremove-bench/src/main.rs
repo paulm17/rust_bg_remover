@@ -175,6 +175,13 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         workers: usize,
     },
+    /// Validate the BRIA RMBG profile registry and write the raw-alpha
+    /// tournament report. Runtime inference is intentionally unavailable
+    /// until a hash-verified, licence-approved external checkpoint is given.
+    M8Smoke {
+        #[arg(long, default_value = "runs/m8-rmbg")]
+        output: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -467,6 +474,7 @@ fn main() -> Result<()> {
             provider,
             workers,
         } => write_m7_child(&input, &reference, &manifest, &provider, workers)?,
+        Command::M8Smoke { output } => write_m8_smoke(&output)?,
     }
     Ok(())
 }
@@ -502,6 +510,16 @@ fn hash_f32_values(values: &[f32]) -> String {
         .finalize()
         .iter()
         .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn hash_bytes(bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(bytes);
+    digest
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
         .collect()
 }
 
@@ -922,6 +940,116 @@ fn write_m4_smoke(
     bytes.push(b'\n');
     fs::write(output.join("report.json"), bytes)?;
     println!("wrote {}", output.display());
+    Ok(())
+}
+
+fn write_m8_smoke(output: &Path) -> Result<()> {
+    let mut models = Vec::new();
+    for path in ["models/m8_rmbg_1_4.toml", "models/m8_rmbg_2_0.toml"] {
+        let text = fs::read_to_string(path)?;
+        let manifest = bgremove_models::parse_toml(&text)?;
+        ensure!(
+            !manifest.intended_use_approved,
+            "M8 smoke must not execute an unapproved checkpoint"
+        );
+        let manifest_hash = hash_bytes(text.as_bytes());
+        models.push(serde_json::json!({
+            "id": manifest.id, "manifest": path, "manifest_sha256": manifest_hash,
+            "model_sha256": manifest.sha256, "license_identifier": manifest.license_identifier,
+            "intended_use_approved": false, "available": false, "status": "excluded-license",
+            "exclusion": "checkpoint is not present and commercial approval is not supplied"
+        }));
+    }
+    let parity_text = fs::read_to_string("tests/fixtures/m8/reference/parity.json")?;
+    let parity: serde_json::Value = serde_json::from_str(&parity_text)?;
+    ensure!(
+        parity["authoritative_sources_executed"] == true,
+        "M8 parity sources were not executed"
+    );
+    let parity_hash = hash_bytes(parity_text.as_bytes());
+    let m6: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string("runs/m6-carvekit/report.json")?)?;
+    let rust_report: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+        "tests/fixtures/m8/authoritative/rust-rmbg/report.json",
+    )?)?;
+    let py_report: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+        "tests/fixtures/m8/authoritative/report.json",
+    )?)?;
+    ensure!(
+        rust_report["authoritative_execution"] == true
+            && py_report["authoritative_execution"] == true,
+        "M8 authoritative reports are invalid"
+    );
+    for (path, expected) in [
+        (
+            Path::new("models/M8_SYNTHETIC_ONNX_LICENSE.txt"),
+            "11762333d44173f00c5bbe7e7e805105f1d75ab38c93b079807e33d23136d8a6",
+        ),
+        (
+            Path::new("models/M3_FIXTURE_LICENSE.txt"),
+            "cfed44a701bec837a8ae43d9e6baf69fa5b7fd88aeed383c5ad630b8f430b610",
+        ),
+    ] {
+        ensure!(
+            hash_file(path)? == expected,
+            "M8 synthetic license artifact is stale or tampered: {}",
+            path.display()
+        );
+    }
+    ensure!(
+        rust_report["model"]["license_path"] == "models/M8_SYNTHETIC_ONNX_LICENSE.txt"
+            && rust_report["model"]["license_sha256"]
+                == "11762333d44173f00c5bbe7e7e805105f1d75ab38c93b079807e33d23136d8a6",
+        "M8 Rust synthetic license provenance mismatch"
+    );
+    ensure!(
+        py_report["model"]["license_path"] == "models/M3_FIXTURE_LICENSE.txt"
+            && py_report["model"]["license_sha256"]
+                == "cfed44a701bec837a8ae43d9e6baf69fa5b7fd88aeed383c5ad630b8f430b610",
+        "M8 Python synthetic license provenance mismatch"
+    );
+    for (source_report, directory) in [
+        (
+            &rust_report,
+            Path::new("tests/fixtures/m8/reference/rmbg-rust"),
+        ),
+        (
+            &py_report,
+            Path::new("tests/fixtures/m8/reference/rembg-bria"),
+        ),
+    ] {
+        for stage in [
+            "decoded-rgb.f32le",
+            "preprocessed-tensor.f32le",
+            "raw-onnx-output.f32le",
+            "restored-alpha.f32le",
+            "final-straight-alpha-cutout.rgba",
+        ] {
+            let stage_path = directory.join(stage);
+            ensure!(
+                hash_file(&stage_path)? == source_report["stages"][stage],
+                "M8 authoritative stage is stale or tampered: {}",
+                stage_path.display()
+            );
+        }
+    }
+    let report = serde_json::json!({
+        "schema": "m8.rmbg-raw-alpha-tournament.v1", "status": "fixture-only",
+        "source_profiles": [
+            {"name":"rust-rmbg-crate", "repository":"projects/rust/rmbg", "commit":parity["source"]["rust_rmbg_commit"], "source_file_sha256":rust_report["source"]["source_file_sha256"], "contract":"RGBA alpha-premultiplied fast_image_resize bilinear stretch; RGB NCHW; value minus 0.5; output0/channel0; output min/max; bilinear restore"},
+            {"name":"rembg-bria-python", "repository":"projects/python/rembg", "commit":parity["source"]["rembg_commit"], "source_file_sha256":py_report["source"]["source_file_sha256"], "contract":"Pillow LANCZOS RGB stretch; resized-image global max; ImageNet; output0/channel0; output min/max; Pillow LANCZOS restore"}
+        ], "models": models,
+        "tournament": {"definition": m6["tournament"], "candidates": ["rmbg-1.4@briaai", "rmbg-2.0@rembg-v0.0.0"], "shared_input": {"path":"test_images/reference/1.png", "file_sha256":m6["runs"][0]["input"]["file_sha256"], "decoded_rgb_sha256":m6["runs"][0]["input"]["decoded_rgb_sha256"]}, "shared_reference": {"path":"test_images/photoroom/1.png", "file_sha256":m6["runs"][0]["reference"]["file_sha256"], "decoded_alpha_sha256":m6["runs"][0]["reference"]["decoded_alpha_sha256"]}, "results":[{"candidate":"rmbg-1.4@briaai","status":"excluded-license","metrics":null},{"candidate":"rmbg-2.0@rembg-v0.0.0","status":"excluded-license","metrics":null}], "scores":[], "metrics":{"alpha_mae":"not run","soft_iou":"not run"}, "identical_downstream":true, "downstream":"raw restored alpha, canonical dimensions, straight-alpha original RGB, no cleanup/refiner"},
+        "level2_fixture": {"path":"tests/fixtures/m8/reference/parity.json", "sha256":parity_hash, "parity":parity},
+        "gates": {"rust_profile_and_rembg_profile_separate":true, "constant_output_safe":true, "nonfinite_output_rejected":true, "runtime_downloads":false, "raw_alpha_no_cleanup":true, "unapproved_weights_disabled":true, "authoritative_synthetic_sources_executed":true, "bria_checkpoints_executed":false, "available_models_executed":false},
+        "deterministic": true
+    });
+    let canonical = serde_json::to_vec_pretty(&report)?;
+    let mut canonical = canonical;
+    canonical.push(b'\n');
+    fs::create_dir_all(output)?;
+    fs::write(output.join("report.json"), canonical)?;
+    println!("wrote {}", output.join("report.json").display());
     Ok(())
 }
 
@@ -2753,6 +2881,29 @@ mod tests {
                 "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709"
             );
         }
+    }
+
+    #[test]
+    fn m8_report_is_truthful_about_unavailable_restrictive_checkpoints() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join("runs/m8-rmbg/report.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["status"], "fixture-only");
+        assert_eq!(report["tournament"]["identical_downstream"], true);
+        assert!(report["tournament"]["scores"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        for model in report["models"].as_array().unwrap() {
+            assert_eq!(model["available"], false);
+            assert_eq!(model["intended_use_approved"], false);
+            assert_eq!(model["manifest_sha256"].as_str().unwrap().len(), 64);
+            assert!(model["exclusion"].as_str().unwrap().contains("not present"));
+        }
+        assert_eq!(report["gates"]["runtime_downloads"], false);
+        assert_eq!(report["gates"]["raw_alpha_no_cleanup"], true);
     }
 
     #[test]

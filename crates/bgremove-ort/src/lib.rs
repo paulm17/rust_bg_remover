@@ -484,7 +484,9 @@ pub fn isnet_preprocess_rgb(
     let resized = match profile {
         PreprocessingProfile::ImglyIsnet => resize_u8_bilinear_js(&bytes, w, h, 3, 1024, 1024)?,
         PreprocessingProfile::RembgDis => resize_u8_lanczos(&bytes, w, h, 3, 1024, 1024)?,
-        PreprocessingProfile::Generic => unreachable!(),
+        PreprocessingProfile::Generic
+        | PreprocessingProfile::RmbgRust
+        | PreprocessingProfile::RembgBria => unreachable!(),
     };
     let rembg_max = if profile == PreprocessingProfile::RembgDis {
         resized.iter().copied().max().unwrap_or(0).max(1) as f32
@@ -498,7 +500,9 @@ pub fn isnet_preprocess_rgb(
             values[c * 1024 * 1024 + i] = match profile {
                 PreprocessingProfile::ImglyIsnet => (byte - 128.0) / 256.0,
                 PreprocessingProfile::RembgDis => byte / rembg_max - 0.5,
-                PreprocessingProfile::Generic => unreachable!(),
+                PreprocessingProfile::Generic
+                | PreprocessingProfile::RmbgRust
+                | PreprocessingProfile::RembgBria => unreachable!(),
             };
         }
     }
@@ -662,7 +666,9 @@ impl IsnetSegmenter {
                     "rembg DIS normalization metadata mismatch"
                 );
             }
-            PreprocessingProfile::Generic => unreachable!(),
+            PreprocessingProfile::Generic
+            | PreprocessingProfile::RmbgRust
+            | PreprocessingProfile::RembgBria => unreachable!(),
         }
         Ok(Self {
             pool: SessionPool::new(
@@ -699,7 +705,9 @@ impl IsnetSegmenter {
             PreprocessingProfile::RembgDis => {
                 apply_output_transform(output, Activation::None, OutputNormalization::None)?
             }
-            PreprocessingProfile::Generic => unreachable!(),
+            PreprocessingProfile::Generic
+            | PreprocessingProfile::RmbgRust
+            | PreprocessingProfile::RembgBria => unreachable!(),
         };
         let raw = match raw_output.shape.as_slice() {
             [1, 1, 1024, 1024] => raw_output.values.clone(),
@@ -714,7 +722,9 @@ impl IsnetSegmenter {
             PreprocessingProfile::RembgDis => {
                 restore_rembg_dis_mask(&raw, image.width(), image.height())
             }
-            PreprocessingProfile::Generic => unreachable!(),
+            PreprocessingProfile::Generic
+            | PreprocessingProfile::RmbgRust
+            | PreprocessingProfile::RembgBria => unreachable!(),
         }?;
         Ok(IsnetRunEvidence {
             tensor: input,
@@ -1705,6 +1715,31 @@ fn first_output_mask(
     Ok(values.to_vec())
 }
 
+#[cfg(feature = "bria")]
+fn first_output_mask_channel0(
+    output: &TensorOutput,
+    width: u32,
+    height: u32,
+    model_id: &str,
+) -> Result<Vec<f32>> {
+    let expected = width as usize * height as usize;
+    let values = match output.shape.as_slice() {
+        [1, channels, h, w] if *channels > 0 && *h == height as i64 && *w == width as i64 => {
+            ensure!(
+                output.values.len() == expected * *channels as usize,
+                "model {model_id} output value count mismatch"
+            );
+            &output.values[..expected]
+        }
+        _ => return first_output_mask(output, width, height, model_id),
+    };
+    ensure!(
+        values.iter().all(|value| value.is_finite()),
+        "model {model_id} first output contains NaN/Inf"
+    );
+    Ok(values.to_vec())
+}
+
 /// Restore a rembg U2-Net mask: direct first-output values are safely
 /// normalized, quantized to uint8 as PIL does, and then resized by Lanczos to
 /// the exact canonical source dimensions.
@@ -2002,13 +2037,23 @@ impl BirefnetSegmenter {
             "BiRefNet must explicitly select output index 0"
         );
         ensure!(
-            manifest.input_shape
-                == vec![
-                    DimensionSpec::Static(1),
-                    DimensionSpec::Static(3),
-                    DimensionSpec::Static(1024),
-                    DimensionSpec::Static(1024)
-                ],
+            manifest.input_shape.len() == 4
+                && matches!(
+                    manifest.input_shape[0],
+                    DimensionSpec::Static(1) | DimensionSpec::Dynamic(_)
+                )
+                && matches!(
+                    manifest.input_shape[1],
+                    DimensionSpec::Static(3) | DimensionSpec::Dynamic(_)
+                )
+                && matches!(
+                    manifest.input_shape[2],
+                    DimensionSpec::Static(1024) | DimensionSpec::Dynamic(_)
+                )
+                && matches!(
+                    manifest.input_shape[3],
+                    DimensionSpec::Static(1024) | DimensionSpec::Dynamic(_)
+                ),
             "BiRefNet input shape metadata mismatch"
         );
         ensure!(
@@ -2085,6 +2130,601 @@ impl bgremove_core::Segmenter for BirefnetSegmenter {
         _prompt: Option<&bgremove_core::Prompt>,
     ) -> Result<bgremove_core::AlphaMask> {
         BirefnetSegmenter::predict(self, image)
+    }
+}
+
+/// BRIA RMBG's two checked-in repository profiles.  The profile is part of
+/// the model contract: RMBG-1.4's original Rust wrapper premultiplies RGBA
+/// before its bilinear stretch, whereas rembg's RMBG-2.0 Python wrapper uses
+/// Pillow RGB/LANCZOS and the global resized-image maximum.
+#[cfg(feature = "bria")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RmbgProfile {
+    RustCrate,
+    RembgPython,
+}
+
+#[cfg(feature = "bria")]
+impl RmbgProfile {
+    pub fn from_manifest(manifest: &ModelManifest) -> Result<Self> {
+        match manifest.preprocessing_profile {
+            PreprocessingProfile::RmbgRust => Ok(Self::RustCrate),
+            PreprocessingProfile::RembgBria => Ok(Self::RembgPython),
+            other => bail!(
+                "manifest {} is not an RMBG profile ({other:?})",
+                manifest.id
+            ),
+        }
+    }
+}
+
+/// Resize an encoded RGBA image with the U8 convolution path from
+/// `fast_image_resize` 3.0.4. This is a small, dependency-free port of its
+/// bilinear coefficient normalization, U8 convolution rounding, and
+/// `MulDiv` alpha operations. RGB is premultiplied by alpha while sampling,
+/// then unpremultiplied, matching the local `rust/rmbg` source.
+#[cfg(feature = "bria")]
+fn resize_rmbg_rgba(
+    rgb: &[[f32; 3]],
+    alpha: &[f32],
+    source_width: u32,
+    source_height: u32,
+    target_width: u32,
+    target_height: u32,
+) -> Result<(Vec<[f32; 3]>, Vec<f32>)> {
+    ensure!(
+        source_width > 0 && source_height > 0 && target_width > 0 && target_height > 0,
+        "RMBG resize dimensions must be positive"
+    );
+    ensure!(
+        rgb.len() == (source_width as usize) * (source_height as usize),
+        "RMBG RGB resize length mismatch"
+    );
+    ensure!(
+        alpha.len() == rgb.len(),
+        "RMBG alpha resize length mismatch"
+    );
+    let rgb_u8 = rgb
+        .iter()
+        .map(|pixel| pixel.map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8))
+        .collect::<Vec<_>>();
+    let alpha_u8 = alpha
+        .iter()
+        .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8)
+        .collect::<Vec<_>>();
+    let mut source = vec![[0u8; 4]; rgb_u8.len()];
+    for (index, pixel) in source.iter_mut().enumerate() {
+        let alpha = alpha_u8[index];
+        pixel[0] = fast_mul_div_255(rgb_u8[index][0], alpha);
+        pixel[1] = fast_mul_div_255(rgb_u8[index][1], alpha);
+        pixel[2] = fast_mul_div_255(rgb_u8[index][2], alpha);
+        pixel[3] = alpha;
+    }
+    let (horizontal, horizontal_precision) = fast_bilinear_coefficients(source_width, target_width);
+    let (vertical, vertical_precision) = fast_bilinear_coefficients(source_height, target_height);
+    let mut vertical_pass = vec![[0u8; 4]; (source_width as usize) * (target_height as usize)];
+    for oy in 0..target_height as usize {
+        let (start, coefficients) = &vertical[oy];
+        for x in 0..source_width as usize {
+            let mut sums = [1i32 << (vertical_precision - 1); 4];
+            for (tap, coefficient) in coefficients.iter().enumerate() {
+                let pixel = source[(start + tap) * source_width as usize + x];
+                for channel in 0..4 {
+                    sums[channel] += pixel[channel] as i32 * i32::from(*coefficient);
+                }
+            }
+            let output = &mut vertical_pass[oy * source_width as usize + x];
+            for channel in 0..4 {
+                output[channel] = fast_clip_u8(sums[channel], vertical_precision);
+            }
+        }
+    }
+    let mut resized = vec![[0u8; 4]; (target_width as usize) * (target_height as usize)];
+    for y in 0..target_height as usize {
+        for (ox, (start, coefficients)) in horizontal.iter().enumerate() {
+            let mut sums = [1i32 << (horizontal_precision - 1); 4];
+            for (tap, coefficient) in coefficients.iter().enumerate() {
+                let pixel = vertical_pass[y * source_width as usize + start + tap];
+                for channel in 0..4 {
+                    sums[channel] += pixel[channel] as i32 * i32::from(*coefficient);
+                }
+            }
+            let output = &mut resized[y * target_width as usize + ox];
+            for channel in 0..4 {
+                output[channel] = fast_clip_u8(sums[channel], horizontal_precision);
+            }
+        }
+    }
+    let mut out_rgb = vec![[0.0; 3]; resized.len()];
+    let mut out_alpha = vec![0.0; resized.len()];
+    for (index, pixel) in resized.into_iter().enumerate() {
+        let alpha = pixel[3];
+        out_alpha[index] = alpha as f32 / 255.0;
+        out_rgb[index] = [
+            fast_div_alpha(pixel[0], alpha) as f32 / 255.0,
+            fast_div_alpha(pixel[1], alpha) as f32 / 255.0,
+            fast_div_alpha(pixel[2], alpha) as f32 / 255.0,
+        ];
+    }
+    Ok((out_rgb, out_alpha))
+}
+
+#[cfg(feature = "bria")]
+fn fast_bilinear_coefficients(input: u32, output: u32) -> (Vec<(usize, Vec<i16>)>, u8) {
+    let scale = input as f64 / output as f64;
+    // fast_image_resize 3.0.4 widens the bilinear kernel for downsampling;
+    // omitting this is a subtle but material mismatch on restoration.
+    let filter_scale = scale.max(1.0);
+    let radius = filter_scale;
+    let mut raw = Vec::with_capacity(output as usize);
+    for out in 0..output {
+        let center = (out as f64 + 0.5) * scale;
+        let minimum = (center - radius).floor().max(0.0) as u32;
+        let maximum = (center + radius).ceil().min(input as f64) as u32;
+        let mut coefficients = Vec::new();
+        for x in minimum..maximum {
+            let weight = (1.0 - ((x as f64 - (center - 0.5)) / filter_scale).abs()).max(0.0);
+            coefficients.push((x, weight));
+        }
+        while coefficients
+            .first()
+            .is_some_and(|(_, weight)| *weight == 0.0)
+        {
+            coefficients.remove(0);
+        }
+        while coefficients
+            .last()
+            .is_some_and(|(_, weight)| *weight == 0.0)
+        {
+            coefficients.pop();
+        }
+        let sum: f64 = coefficients.iter().map(|(_, weight)| *weight).sum();
+        raw.push((
+            coefficients.first().map_or(0, |(x, _)| *x as usize),
+            coefficients
+                .into_iter()
+                .map(|(x, weight)| (x, weight / sum))
+                .collect::<Vec<_>>(),
+        ));
+    }
+    let max_weight = raw
+        .iter()
+        .flat_map(|(_, values)| values.iter().map(|(_, weight)| *weight))
+        .fold(0.0f64, f64::max);
+    let mut precision = 0u8;
+    for candidate in 0..22u8 {
+        precision = candidate;
+        let next = (max_weight * (1u32 << (candidate + 1)) as f64).round() as i32;
+        if next >= (1 << 15) {
+            break;
+        }
+    }
+    let coefficients = raw
+        .into_iter()
+        .map(|(start, values)| {
+            (
+                start,
+                values
+                    .into_iter()
+                    .map(|(_, weight)| (weight * (1u32 << precision) as f64).round() as i16)
+                    .collect(),
+            )
+        })
+        .collect();
+    (coefficients, precision)
+}
+
+#[cfg(feature = "bria")]
+#[inline]
+fn fast_mul_div_255(a: u8, b: u8) -> u8 {
+    let value = a as u32 * b as u32 + 128;
+    (((value >> 8) + value) >> 8) as u8
+}
+
+#[cfg(feature = "bria")]
+#[inline]
+fn fast_div_alpha(value: u8, alpha: u8) -> u8 {
+    let reciprocal = if alpha == 0 {
+        0
+    } else {
+        (((255u32 * 512) / alpha as u32) + 1) >> 1
+    };
+    ((value as u32 * reciprocal) >> 8).min(255) as u8
+}
+
+#[cfg(feature = "bria")]
+#[inline]
+fn fast_clip_u8(value: i32, precision: u8) -> u8 {
+    (value >> precision).clamp(0, 255) as u8
+}
+
+#[cfg(feature = "bria")]
+fn resize_rmbg_mask_u8(
+    source: &[u8],
+    source_width: u32,
+    source_height: u32,
+    target_width: u32,
+    target_height: u32,
+) -> Result<Vec<u8>> {
+    ensure!(
+        source.len() == source_width as usize * source_height as usize,
+        "RMBG mask resize length mismatch"
+    );
+    let (horizontal, horizontal_precision) = fast_bilinear_coefficients(source_width, target_width);
+    let (vertical, vertical_precision) = fast_bilinear_coefficients(source_height, target_height);
+    let mut vertical_pass = vec![0u8; source_width as usize * target_height as usize];
+    for oy in 0..target_height as usize {
+        let (start, coefficients) = &vertical[oy];
+        for x in 0..source_width as usize {
+            let mut sum = 1i32 << (vertical_precision - 1);
+            for (tap, coefficient) in coefficients.iter().enumerate() {
+                sum += source[(start + tap) * source_width as usize + x] as i32
+                    * i32::from(*coefficient);
+            }
+            vertical_pass[oy * source_width as usize + x] = fast_clip_u8(sum, vertical_precision);
+        }
+    }
+    let mut output = vec![0u8; target_width as usize * target_height as usize];
+    for y in 0..target_height as usize {
+        for (ox, (start, coefficients)) in horizontal.iter().enumerate() {
+            let mut sum = 1i32 << (horizontal_precision - 1);
+            for (tap, coefficient) in coefficients.iter().enumerate() {
+                sum += vertical_pass[y * source_width as usize + start + tap] as i32
+                    * i32::from(*coefficient);
+            }
+            output[y * target_width as usize + ox] = fast_clip_u8(sum, horizontal_precision);
+        }
+    }
+    Ok(output)
+}
+
+#[cfg(feature = "bria")]
+fn rgb_bytes(image: &bgremove_core::CanonicalImage) -> Vec<u8> {
+    image
+        .rgb()
+        .data()
+        .iter()
+        .flat_map(|px| {
+            px.iter()
+                .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8)
+        })
+        .collect()
+}
+
+/// Exact preprocessing used by the local `rust/rmbg` crate (RMBG-1.4).
+/// Unlike rembg, it preserves the source alpha during the RGBA resize.
+#[cfg(feature = "bria")]
+pub fn rmbg_rust_preprocess_rgb(image: &bgremove_core::CanonicalImage) -> Result<TensorInput> {
+    let (resized, _) = resize_rmbg_rgba(
+        image.rgb().data(),
+        image.source_alpha().data(),
+        image.width(),
+        image.height(),
+        1024,
+        1024,
+    )?;
+    let plane = 1024usize * 1024usize;
+    let mut values = vec![0.0; 3 * plane];
+    for (index, pixel) in resized.iter().enumerate() {
+        for c in 0..3 {
+            let value = pixel[c] - 0.5;
+            ensure!(
+                value.is_finite(),
+                "RMBG Rust preprocessing produced NaN/Inf"
+            );
+            values[c * plane + index] = value;
+        }
+    }
+    Ok(TensorInput {
+        shape: vec![1, 3, 1024, 1024],
+        values,
+    })
+}
+
+/// Exact preprocessing used by rembg's pinned `BriaRmBgSession` (RMBG-2.0).
+/// This deliberately does not call the BiRefNet helper so changing another
+/// model family cannot silently change this profile.
+#[cfg(feature = "bria")]
+pub fn rembg_bria_preprocess_rgb(image: &bgremove_core::CanonicalImage) -> Result<TensorInput> {
+    let resized = resize_u8_pillow_lanczos(
+        &rgb_bytes(image),
+        image.width(),
+        image.height(),
+        3,
+        1024,
+        1024,
+    )?;
+    let max_value = resized.iter().copied().max().unwrap_or(0).max(1) as f32;
+    let plane = 1024usize * 1024usize;
+    let mean = [0.485f32, 0.456, 0.406];
+    let std = [0.229f32, 0.224, 0.225];
+    let mut values = vec![0.0; 3 * plane];
+    for index in 0..plane {
+        for c in 0..3 {
+            let value = (resized[index * 3 + c] as f32 / max_value - mean[c]) / std[c];
+            ensure!(
+                value.is_finite(),
+                "rembg BRIA preprocessing produced NaN/Inf"
+            );
+            values[c * plane + index] = value;
+        }
+    }
+    Ok(TensorInput {
+        shape: vec![1, 3, 1024, 1024],
+        values,
+    })
+}
+
+#[cfg(feature = "bria")]
+pub fn rmbg_preprocess_rgb(
+    image: &bgremove_core::CanonicalImage,
+    profile: RmbgProfile,
+) -> Result<TensorInput> {
+    match profile {
+        RmbgProfile::RustCrate => rmbg_rust_preprocess_rgb(image),
+        RmbgProfile::RembgPython => rembg_bria_preprocess_rgb(image),
+    }
+}
+
+/// Safely apply either the repository's per-image min/max or a calibrated
+/// clamp. Constant tensors intentionally become all-zero rather than NaN.
+#[cfg(feature = "bria")]
+pub fn normalize_rmbg_output(
+    values: &[f32],
+    normalization: OutputNormalization,
+) -> Result<Vec<f32>> {
+    ensure!(!values.is_empty(), "RMBG output is empty");
+    ensure!(
+        values.iter().all(|value| value.is_finite()),
+        "RMBG output contains NaN/Inf"
+    );
+    let mut out = values.to_vec();
+    match normalization {
+        OutputNormalization::None => {}
+        OutputNormalization::Clamp => out
+            .iter_mut()
+            .for_each(|value| *value = value.clamp(0.0, 1.0)),
+        OutputNormalization::MinMax => {
+            let (min, max) = values
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), value| {
+                    (lo.min(*value), hi.max(*value))
+                });
+            if (max - min).abs() <= f32::EPSILON {
+                out.fill(0.0);
+            } else {
+                out.iter_mut()
+                    .for_each(|value| *value = ((*value - min) / (max - min)).clamp(0.0, 1.0));
+            }
+        }
+    }
+    ensure!(
+        out.iter().all(|value| value.is_finite()),
+        "RMBG transformed output contains NaN/Inf"
+    );
+    Ok(out)
+}
+
+/// Restore a 1024² output with the profile's repository resampler. Values are
+/// quantized exactly as each source wrapper does before restoring geometry.
+#[cfg(feature = "bria")]
+pub fn restore_rmbg_mask(
+    values: &[f32],
+    profile: RmbgProfile,
+    normalization: OutputNormalization,
+    source_width: u32,
+    source_height: u32,
+) -> Result<bgremove_core::AlphaMask> {
+    ensure!(
+        values.len() == 1024 * 1024,
+        "RMBG output must contain 1024x1024 values"
+    );
+    let values = normalize_rmbg_output(values, normalization)?;
+    let bytes = values
+        .iter()
+        .map(|value| (value.clamp(0.0, 1.0) * 255.0) as u8)
+        .collect::<Vec<_>>();
+    let restored = match profile {
+        RmbgProfile::RustCrate => {
+            resize_rmbg_mask_u8(&bytes, 1024, 1024, source_width, source_height)?
+        }
+        RmbgProfile::RembgPython => {
+            resize_u8_pillow_lanczos(&bytes, 1024, 1024, 1, source_width, source_height)?
+        }
+    };
+    bgremove_core::AlphaMask::new(
+        source_width,
+        source_height,
+        restored
+            .into_iter()
+            .map(|value| value as f32 / 255.0)
+            .collect(),
+    )
+}
+
+#[cfg(feature = "bria")]
+pub struct RmbgRunEvidence {
+    pub profile: RmbgProfile,
+    pub tensor: TensorInput,
+    pub raw_output: TensorOutput,
+    pub transformed_output: TensorOutput,
+    pub restored: bgremove_core::AlphaMask,
+}
+
+/// Manifest-driven BRIA adapter. The type is behind the `bria` Cargo feature
+/// so a commercial build can remove BRIA integration entirely; manifests also
+/// remain fail-closed on unapproved checkpoint licences.
+#[cfg(feature = "bria")]
+pub struct RmbgSegmenter {
+    pool: SessionPool,
+    profile: RmbgProfile,
+    normalization: OutputNormalization,
+}
+
+#[cfg(feature = "bria")]
+impl RmbgSegmenter {
+    pub fn new(
+        manifest: &ModelManifest,
+        manifest_path: &Path,
+        runtime: &Path,
+        workers: usize,
+        requested: RequestedProvider,
+        fallback_allowed: bool,
+    ) -> Result<Self> {
+        ensure!(
+            manifest.algorithm_family == "rmbg",
+            "RMBG adapter requires algorithm_family=rmbg"
+        );
+        ensure!(
+            manifest.width == 1024 && manifest.height == 1024,
+            "RMBG adapter requires 1024x1024"
+        );
+        ensure!(
+            manifest.layout == bgremove_models::ModelLayout::Nchw
+                && manifest.aspect == bgremove_models::AspectPolicy::Stretch
+                && manifest.channel_order == bgremove_models::ChannelOrder::Rgb,
+            "RMBG adapter requires RGB NCHW stretch input"
+        );
+        ensure!(
+            manifest.activation == Activation::None,
+            "RMBG output is direct; activation must be none"
+        );
+        ensure!(
+            manifest.output_index == Some(0),
+            "RMBG must explicitly select output index 0"
+        );
+        ensure!(
+            manifest.input_type == Some(TensorElementType::F32)
+                && manifest.output_type == Some(TensorElementType::F32),
+            "RMBG tensors must be f32"
+        );
+        ensure!(
+            manifest.input_shape.len() == 4
+                && matches!(
+                    manifest.input_shape[0],
+                    DimensionSpec::Static(1) | DimensionSpec::Dynamic(_)
+                )
+                && matches!(
+                    manifest.input_shape[1],
+                    DimensionSpec::Static(3) | DimensionSpec::Dynamic(_)
+                )
+                && matches!(
+                    manifest.input_shape[2],
+                    DimensionSpec::Static(1024) | DimensionSpec::Dynamic(_)
+                )
+                && matches!(
+                    manifest.input_shape[3],
+                    DimensionSpec::Static(1024) | DimensionSpec::Dynamic(_)
+                ),
+            "RMBG input shape metadata mismatch"
+        );
+        ensure!(
+            manifest.output_shape.len() == 4
+                && matches!(
+                    manifest.output_shape[0],
+                    DimensionSpec::Static(1) | DimensionSpec::Dynamic(_)
+                )
+                && match manifest.output_shape[1] {
+                    DimensionSpec::Static(channels) => channels > 0,
+                    DimensionSpec::Dynamic(_) => true,
+                }
+                && matches!(
+                    manifest.output_shape[2],
+                    DimensionSpec::Static(1024) | DimensionSpec::Dynamic(_)
+                )
+                && matches!(
+                    manifest.output_shape[3],
+                    DimensionSpec::Static(1024) | DimensionSpec::Dynamic(_)
+                ),
+            "RMBG output shape metadata mismatch"
+        );
+        let profile = RmbgProfile::from_manifest(manifest)?;
+        match profile {
+            RmbgProfile::RustCrate => ensure!(
+                manifest.resize_filter == bgremove_models::ResizeFilter::Bilinear
+                    && manifest.mean == [0.5; 3]
+                    && manifest.std == [1.0; 3],
+                "RMBG Rust profile metadata mismatch"
+            ),
+            RmbgProfile::RembgPython => ensure!(
+                manifest.resize_filter == bgremove_models::ResizeFilter::Lanczos3
+                    && manifest.mean == [0.485, 0.456, 0.406]
+                    && manifest.std == [0.229, 0.224, 0.225],
+                "rembg BRIA profile metadata mismatch"
+            ),
+        }
+        ensure!(
+            matches!(
+                manifest.output_normalization,
+                OutputNormalization::MinMax | OutputNormalization::Clamp
+            ),
+            "RMBG output must declare minmax or clamp"
+        );
+        Ok(Self {
+            pool: SessionPool::new(
+                manifest,
+                manifest_path,
+                runtime,
+                workers,
+                requested,
+                fallback_allowed,
+            )?,
+            profile,
+            normalization: manifest.output_normalization,
+        })
+    }
+
+    pub fn predict_with_evidence(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+    ) -> Result<RmbgRunEvidence> {
+        let tensor = rmbg_preprocess_rgb(image, self.profile)?;
+        let mut lease = self.pool.checkout();
+        let raw_output = lease.session_mut().run(&tensor.shape, &tensor.values)?;
+        // Both pinned source profiles select output 0/channel 0 before applying
+        // their profile normalization.  Normalizing the complete multi-channel
+        // tensor would let unrelated channels change per-image min/max.
+        let raw_channel0 = first_output_mask_channel0(&raw_output, 1024, 1024, "rmbg")?;
+        let transformed = normalize_rmbg_output(&raw_channel0, self.normalization)?;
+        let transformed_output = TensorOutput {
+            shape: vec![1, 1, 1024, 1024],
+            values: transformed.clone(),
+        };
+        let restored = restore_rmbg_mask(
+            &transformed,
+            self.profile,
+            OutputNormalization::None,
+            image.width(),
+            image.height(),
+        )?;
+        Ok(RmbgRunEvidence {
+            profile: self.profile,
+            tensor,
+            raw_output,
+            transformed_output,
+            restored,
+        })
+    }
+
+    pub fn predict(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+    ) -> Result<bgremove_core::AlphaMask> {
+        Ok(self.predict_with_evidence(image)?.restored)
+    }
+    pub fn provider(&self) -> ProviderReport {
+        self.pool.provider_report()
+    }
+}
+
+#[cfg(feature = "bria")]
+impl bgremove_core::Segmenter for RmbgSegmenter {
+    fn predict(
+        &mut self,
+        image: &bgremove_core::CanonicalImage,
+        _prompt: Option<&bgremove_core::Prompt>,
+    ) -> Result<bgremove_core::AlphaMask> {
+        RmbgSegmenter::predict(self, image)
     }
 }
 
@@ -4630,6 +5270,467 @@ mod tests {
         .unwrap();
         assert_eq!(cutout.rgb().data(), image.rgb().data());
         assert_eq!(cutout.alpha().data(), &[0.0, 0.5]);
+    }
+
+    #[cfg(feature = "bria")]
+    #[test]
+    fn m8_profiles_are_distinct_and_finite() {
+        let image = bgremove_core::CanonicalImage::new_with_alpha(
+            2,
+            1,
+            vec![[0.0, 0.25, 1.0], [0.5, 0.75, 0.1]],
+            bgremove_core::AlphaMask::new(2, 1, vec![0.0, 1.0]).unwrap(),
+        )
+        .unwrap();
+        let rust = rmbg_rust_preprocess_rgb(&image).unwrap();
+        let python = rembg_bria_preprocess_rgb(&image).unwrap();
+        assert_eq!(rust.shape, vec![1, 3, 1024, 1024]);
+        assert_eq!(python.shape, rust.shape);
+        assert!(rust
+            .values
+            .iter()
+            .chain(&python.values)
+            .all(|v| v.is_finite()));
+        assert_ne!(rust.values, python.values);
+    }
+
+    #[cfg(feature = "bria")]
+    #[test]
+    fn m8_constant_and_clamped_outputs_never_create_nonfinite_alpha() {
+        let constant = normalize_rmbg_output(&[0.25, 0.25], OutputNormalization::MinMax).unwrap();
+        assert_eq!(constant, vec![0.0, 0.0]);
+        assert_eq!(
+            normalize_rmbg_output(&[-1.0, 2.0], OutputNormalization::Clamp).unwrap(),
+            vec![0.0, 1.0]
+        );
+        assert!(normalize_rmbg_output(&[f32::NAN], OutputNormalization::MinMax).is_err());
+    }
+
+    #[cfg(feature = "bria")]
+    #[test]
+    fn m8_manifest_normalization_profiles_diverge_on_same_raw_tensor() {
+        let raw = [-1.0, 0.0, 0.25, 2.0];
+        let clamp = normalize_rmbg_output(&raw, OutputNormalization::Clamp).unwrap();
+        let minmax = normalize_rmbg_output(&raw, OutputNormalization::MinMax).unwrap();
+        assert_eq!(clamp, [0.0, 0.0, 0.25, 1.0]);
+        assert_eq!(minmax[0], 0.0);
+        assert_eq!(minmax[3], 1.0);
+        assert!((minmax[1] - (1.0 / 3.0)).abs() < 1e-6);
+        assert!((minmax[2] - (1.25 / 3.0)).abs() < 1e-6);
+        assert_ne!(clamp, minmax);
+        assert!(clamp
+            .iter()
+            .chain(minmax.iter())
+            .all(|value| value.is_finite()));
+    }
+
+    #[cfg(feature = "bria")]
+    #[test]
+    fn m8_normalization_selects_channel_zero_before_minmax() {
+        let plane = 1024 * 1024;
+        let mut values = vec![0.0f32; 3 * plane];
+        values[..plane].fill(0.25);
+        values[1] = 0.75;
+        values[plane] = -10_000.0;
+        values[2 * plane] = 10_000.0;
+        let output = TensorOutput {
+            shape: vec![1, 3, 1024, 1024],
+            values,
+        };
+        let channel0 = first_output_mask_channel0(&output, 1024, 1024, "m8").unwrap();
+        let normalized = normalize_rmbg_output(&channel0, OutputNormalization::MinMax).unwrap();
+        assert_eq!(normalized[0], 0.0);
+        assert_eq!(normalized[1], 1.0);
+    }
+
+    #[test]
+    fn m8_complete_fixture_stages_are_hash_validated() {
+        let root = Path::new("../../tests/fixtures/m8/reference");
+        let report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("parity.json")).unwrap())
+                .unwrap();
+        let rust_report: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string("../../tests/fixtures/m8/authoritative/rust-rmbg/report.json")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            rust_report["source"]["commit"],
+            "8ce479cac1f2940502da1a55e19d19183f4862f7"
+        );
+        assert_eq!(
+            rust_report["source"]["source_file_sha256"],
+            "f9fc3538d1e167bc30268dae85d664fa59a97897eab65024fcb04d5eca248417"
+        );
+        assert_eq!(
+            rust_report["source"]["instrumentation_patch_sha256"],
+            "14535186936f2e72c073119ee2461c1ee394b8ffd957b1fd131bf80b100b7856"
+        );
+        assert_eq!(
+            rust_report["model"]["license_path"],
+            "models/M8_SYNTHETIC_ONNX_LICENSE.txt"
+        );
+        assert_eq!(
+            rust_report["model"]["license_sha256"],
+            "11762333d44173f00c5bbe7e7e805105f1d75ab38c93b079807e33d23136d8a6"
+        );
+        for profile in ["rmbg-rust", "rembg-bria"] {
+            let directory = root.join(profile);
+            let entry = report["profiles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["profile"] == profile)
+                .unwrap();
+            for stage in [
+                "decoded-rgb.f32le",
+                "preprocessed-tensor.f32le",
+                "raw-onnx-output.f32le",
+                "restored-alpha.f32le",
+                "final-straight-alpha-cutout.rgba",
+            ] {
+                let bytes = std::fs::read(directory.join(stage)).unwrap();
+                let expected_len = match stage {
+                    "decoded-rgb.f32le" => 3 * 2 * 3 * 4,
+                    "preprocessed-tensor.f32le" | "raw-onnx-output.f32le" => 3 * 1024 * 1024 * 4,
+                    "restored-alpha.f32le" => 3 * 2 * 4,
+                    _ => 3 * 2 * 4,
+                };
+                assert_eq!(bytes.len(), expected_len, "fixture stage {profile}/{stage}");
+                let actual = sha2::Sha256::digest(&bytes)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                assert_eq!(actual, entry["stages"][stage]);
+            }
+        }
+    }
+
+    #[test]
+    fn m8_authoritative_rembg_stages_are_complete_and_hash_validated() {
+        let root = Path::new("../../tests/fixtures/m8/authoritative");
+        let report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("report.json")).unwrap())
+                .unwrap();
+        assert_eq!(report["authoritative_execution"], true);
+        assert_eq!(report["profile"], "rembg-bria");
+        assert_eq!(
+            report["source"]["commit"],
+            "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709"
+        );
+        assert_eq!(
+            report["source"]["source_file_sha256"],
+            "e3c3747be5af3db15597796a83e73cfa5c464bb5df9c2b047c4113c4bfc3f811"
+        );
+        assert_eq!(
+            report["source"]["base_source_file_sha256"],
+            "ec4c58b33dd47ad6f03883ee375353314b19d5688fffd5c1ddb57bb21e9846a3"
+        );
+        assert_eq!(
+            report["source"]["source_tree_sha256"],
+            "a9c2584b47370c5f7f71e0049c9130a311b028150e444ed979ffafbccdd6b058"
+        );
+        assert_eq!(
+            report["model"]["license_path"],
+            "models/M3_FIXTURE_LICENSE.txt"
+        );
+        assert_eq!(
+            report["model"]["license_sha256"],
+            "cfed44a701bec837a8ae43d9e6baf69fa5b7fd88aeed383c5ad630b8f430b610"
+        );
+        assert_eq!(
+            report["runtime"]["raw_shape"],
+            serde_json::json!([1, 3, 1024, 1024])
+        );
+        let directory = Path::new("../../tests/fixtures/m8/reference/rembg-bria");
+        for stage in [
+            "decoded-rgb.f32le",
+            "preprocessed-tensor.f32le",
+            "raw-onnx-output.f32le",
+            "restored-alpha.f32le",
+            "final-straight-alpha-cutout.rgba",
+        ] {
+            let bytes = std::fs::read(directory.join(stage)).unwrap();
+            let expected_len = match stage {
+                "decoded-rgb.f32le" => 3 * 2 * 3 * 4,
+                "preprocessed-tensor.f32le" | "raw-onnx-output.f32le" => 3 * 1024 * 1024 * 4,
+                "restored-alpha.f32le" => 3 * 2 * 4,
+                _ => 3 * 2 * 4,
+            };
+            assert_eq!(bytes.len(), expected_len, "authoritative stage {stage}");
+            let actual = sha2::Sha256::digest(&bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(actual, report["stages"][stage]);
+        }
+    }
+
+    #[cfg(feature = "bria")]
+    #[test]
+    fn m8_authoritative_profiles_match_rust_stage_semantics() -> Result<()> {
+        fn read_f32(path: &Path) -> Vec<f32> {
+            std::fs::read(path)
+                .unwrap()
+                .chunks_exact(4)
+                .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect()
+        }
+        let image = bgremove_core::CanonicalImage::new_with_alpha(
+            3,
+            2,
+            vec![
+                [0.0, 64.0 / 255.0, 1.0],
+                [128.0 / 255.0, 191.0 / 255.0, 26.0 / 255.0],
+                [51.0 / 255.0, 102.0 / 255.0, 204.0 / 255.0],
+                [1.0, 26.0 / 255.0, 0.0],
+                [77.0 / 255.0, 153.0 / 255.0, 230.0 / 255.0],
+                [204.0 / 255.0, 51.0 / 255.0, 102.0 / 255.0],
+            ],
+            bgremove_core::AlphaMask::new(
+                3,
+                2,
+                vec![
+                    0.0,
+                    64.0 / 255.0,
+                    180.0 / 255.0,
+                    1.0,
+                    128.0 / 255.0,
+                    220.0 / 255.0,
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let rust_root = Path::new("../../tests/fixtures/m8/reference/rmbg-rust");
+        let python_root = Path::new("../../tests/fixtures/m8/reference/rembg-bria");
+        let rust_tensor = rmbg_rust_preprocess_rgb(&image).unwrap();
+        let python_tensor = rembg_bria_preprocess_rgb(&image).unwrap();
+        let parity: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string("../../tests/fixtures/m8/reference/parity.json").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(parity["authoritative_sources_executed"], true);
+        assert_eq!(
+            parity["source"]["rust_rmbg_commit"],
+            "8ce479cac1f2940502da1a55e19d19183f4862f7"
+        );
+        assert_eq!(
+            parity["source"]["rembg_commit"],
+            "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709"
+        );
+        assert_eq!(parity["source"]["rust_tracked_source_clean"], true);
+        assert_eq!(
+            parity["source"]["rust_instrumentation_patch_sha256"],
+            "14535186936f2e72c073119ee2461c1ee394b8ffd957b1fd131bf80b100b7856"
+        );
+        let expected_rust_tensor = read_f32(&rust_root.join("preprocessed-tensor.f32le"));
+        let expected_python_tensor = read_f32(&python_root.join("preprocessed-tensor.f32le"));
+        assert_eq!(rust_tensor.values, expected_rust_tensor);
+        assert!(python_tensor
+            .values
+            .iter()
+            .zip(expected_python_tensor)
+            .all(|(actual, expected)| (actual - expected).abs() <= 2e-5));
+
+        let plane = 1024 * 1024;
+        for (root, profile) in [
+            (rust_root, RmbgProfile::RustCrate),
+            (python_root, RmbgProfile::RembgPython),
+        ] {
+            let raw = read_f32(&root.join("raw-onnx-output.f32le"));
+            assert_eq!(raw.len(), 3 * plane);
+            let expected_raw = raw.clone();
+            assert_eq!(read_f32(&root.join("raw-onnx-output.f32le")), expected_raw);
+            let restored = restore_rmbg_mask(
+                &raw[..plane],
+                profile,
+                OutputNormalization::MinMax,
+                image.width(),
+                image.height(),
+            )?;
+            let expected = read_f32(&root.join("restored-alpha.f32le"));
+            let max_error = restored
+                .data()
+                .iter()
+                .zip(&expected)
+                .map(|(actual, expected)| (actual - expected).abs())
+                .fold(0.0f32, f32::max);
+            assert_eq!(
+                max_error, 0.0,
+                "authoritative restore mismatch for {profile:?}"
+            );
+            assert!(restored.data().iter().all(|value| value.is_finite()));
+            let cutout = isnet_straight_cutout(&image, restored)?;
+            let mut actual = Vec::with_capacity(3 * 2 * 4);
+            for (rgb, alpha) in cutout.rgb().data().iter().zip(cutout.alpha().data()) {
+                actual.extend(rgb.iter().map(|v| (v * 255.0).round() as u8));
+                actual.push((alpha * 255.0).round() as u8);
+            }
+            assert_eq!(
+                actual,
+                std::fs::read(root.join("final-straight-alpha-cutout.rgba"))?
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn m8_manifest_profiles_validate_without_external_weights() {
+        for path in [
+            "../../models/m8_rmbg_1_4.toml",
+            "../../models/m8_rmbg_2_0.toml",
+        ] {
+            let manifest =
+                bgremove_models::parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap();
+            let error = manifest.verify_model_hash(Path::new(path)).unwrap_err();
+            assert!(error.to_string().contains("not approved for intended use"));
+            assert!(!manifest.intended_use_approved);
+        }
+    }
+
+    #[cfg(feature = "bria")]
+    #[test]
+    #[ignore = "requires ORT_DYLIB, approved external RMBG weights, and explicit M8 licence approval"]
+    fn m8_real_level2_profiles_match_authoritative_sources_when_approved() {
+        let runtime_os = std::env::var_os("ORT_DYLIB").expect("ORT_DYLIB");
+        let input = std::env::var_os("M8_INPUT").expect("M8_INPUT");
+        let image = bgremove_core::io::load_canonical(Path::new(&input)).unwrap();
+        for manifest_path in [
+            "../../models/m8_rmbg_1_4.toml",
+            "../../models/m8_rmbg_2_0.toml",
+        ] {
+            let manifest =
+                bgremove_models::parse_toml(&std::fs::read_to_string(manifest_path).unwrap())
+                    .unwrap();
+            assert!(
+                manifest.intended_use_approved,
+                "M8 checkpoint licence must be explicitly approved"
+            );
+            let segmenter = RmbgSegmenter::new(
+                &manifest,
+                Path::new(manifest_path),
+                Path::new(&runtime_os),
+                1,
+                RequestedProvider::Cpu,
+                false,
+            )
+            .unwrap();
+            let evidence = segmenter.predict_with_evidence(&image).unwrap();
+            assert!(evidence
+                .raw_output
+                .values
+                .iter()
+                .all(|value| value.is_finite()));
+            assert!(evidence
+                .restored
+                .data()
+                .iter()
+                .all(|value| value.is_finite()));
+        }
+    }
+
+    #[cfg(feature = "bria")]
+    #[test]
+    #[ignore = "requires an externally supplied ORT_DYLIB; uses the permissively licensed M3 identity graph as synthetic 1024² source"]
+    fn m8_synthetic_ort_gate_runs_channel_zero_and_all_stages() {
+        let runtime_os = std::env::var_os("ORT_DYLIB").expect("ORT_DYLIB");
+        let path = Path::new("../../models/m8_rmbg_1_4.toml");
+        let mut manifest =
+            bgremove_models::parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap();
+        manifest.file = "../models/fixtures/m8_rmbg_identity_output.onnx".into();
+        manifest.external = false;
+        manifest.sha256 = "270f3af536551a7ca1a4834b987b3da9c0a5c8f55ccd30cf89a1a3eeeadd18b3".into();
+        manifest.input_name = "input".into();
+        manifest.output_name = "output".into();
+        manifest.input_shape = vec![
+            DimensionSpec::Dynamic("batch".into()),
+            DimensionSpec::Dynamic("channel".into()),
+            DimensionSpec::Dynamic("height".into()),
+            DimensionSpec::Dynamic("width".into()),
+        ];
+        manifest.output_shape = vec![
+            DimensionSpec::Dynamic("batch".into()),
+            DimensionSpec::Dynamic("channel".into()),
+            DimensionSpec::Dynamic("height".into()),
+            DimensionSpec::Dynamic("width".into()),
+        ];
+        manifest.opset = 13;
+        manifest.intended_use_approved = true;
+        let image = bgremove_core::CanonicalImage::new_with_alpha(
+            3,
+            2,
+            vec![
+                [0.0, 64.0 / 255.0, 1.0],
+                [128.0 / 255.0, 191.0 / 255.0, 26.0 / 255.0],
+                [51.0 / 255.0, 102.0 / 255.0, 204.0 / 255.0],
+                [1.0, 26.0 / 255.0, 0.0],
+                [77.0 / 255.0, 153.0 / 255.0, 230.0 / 255.0],
+                [204.0 / 255.0, 51.0 / 255.0, 102.0 / 255.0],
+            ],
+            bgremove_core::AlphaMask::new(
+                3,
+                2,
+                vec![
+                    0.0,
+                    64.0 / 255.0,
+                    180.0 / 255.0,
+                    1.0,
+                    128.0 / 255.0,
+                    220.0 / 255.0,
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let segmenter = RmbgSegmenter::new(
+            &manifest,
+            path,
+            Path::new(&runtime_os),
+            1,
+            RequestedProvider::Cpu,
+            false,
+        )
+        .unwrap();
+        let evidence = segmenter.predict_with_evidence(&image).unwrap();
+        assert_eq!(evidence.tensor.values.len(), 3 * 1024 * 1024);
+        assert_eq!(evidence.raw_output.values.len(), 3 * 1024 * 1024);
+        assert_eq!(evidence.restored.dimensions(), image.dimensions());
+        assert!(evidence
+            .restored
+            .data()
+            .iter()
+            .all(|value| value.is_finite()));
+        fn f32le(path: &str) -> Vec<f32> {
+            std::fs::read(path)
+                .unwrap()
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                .collect()
+        }
+        let root = Path::new("../../tests/fixtures/m8/reference/rmbg-rust");
+        assert_eq!(
+            evidence.tensor.values,
+            f32le(root.join("preprocessed-tensor.f32le").to_str().unwrap())
+        );
+        assert_eq!(
+            evidence.raw_output.values,
+            f32le(root.join("raw-onnx-output.f32le").to_str().unwrap())
+        );
+        assert_eq!(
+            evidence.restored.data(),
+            f32le(root.join("restored-alpha.f32le").to_str().unwrap())
+        );
+        let cutout = isnet_straight_cutout(&image, evidence.restored).unwrap();
+        let mut bytes = Vec::new();
+        for (rgb, alpha) in cutout.rgb().data().iter().zip(cutout.alpha().data()) {
+            bytes.extend(rgb.iter().map(|v| (v * 255.0).round() as u8));
+            bytes.push((alpha * 255.0).round() as u8);
+        }
+        assert_eq!(
+            bytes,
+            std::fs::read(root.join("final-straight-alpha-cutout.rgba")).unwrap()
+        );
     }
 
     #[test]

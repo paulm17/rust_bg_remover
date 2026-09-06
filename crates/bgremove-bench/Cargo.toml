@@ -20,5 +20,9 @@ libc.workspace = true
 bgremove-core = { path = "../bgremove-core" }
 bgremove-color = { path = "../bgremove-color" }
 bgremove-matting = { path = "../bgremove-matting" }
-bgremove-ort = { path = "../bgremove-ort" }
+bgremove-ort = { path = "../bgremove-ort", default-features = false }
 bgremove-models = { path = "../bgremove-models" }
+
+[features]
+default = []
+bria = ["bgremove-ort/bria"]

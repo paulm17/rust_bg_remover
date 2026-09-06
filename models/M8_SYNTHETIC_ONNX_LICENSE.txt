@@ -1,0 +1,6 @@
+M8 synthetic parity graph provenance
+
+This graph is generated locally for M8 parity and contains only the standard
+ONNX Identity operator. It contains no BRIA weights and is released under the
+repository MIT OR Apache-2.0 license. It is not an RMBG checkpoint and grants
+no rights to BRIA checkpoints.

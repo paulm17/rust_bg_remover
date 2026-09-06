@@ -1,0 +1,56 @@
+{
+  "schema": "m8.rmbg-authoritative-profile.v2",
+  "authoritative_execution": true,
+  "profile": "rmbg-rust",
+  "source": {
+    "repository": "projects/rust/rmbg",
+    "commit": "8ce479cac1f2940502da1a55e19d19183f4862f7",
+    "source_file": "projects/rust/rmbg/src/lib.rs",
+    "source_file_sha256": "f9fc3538d1e167bc30268dae85d664fa59a97897eab65024fcb04d5eca248417",
+    "source_tree_sha256": "f9fc3538d1e167bc30268dae85d664fa59a97897eab65024fcb04d5eca248417",
+    "tracked_source_clean": true,
+    "instrumentation_patch_sha256": "14535186936f2e72c073119ee2461c1ee394b8ffd957b1fd131bf80b100b7856",
+    "instrumentation": "checked-in patch applied to temporary clean copy"
+  },
+  "model": {
+    "path": "models/fixtures/m8_rmbg_identity_output.onnx",
+    "sha256": "270f3af536551a7ca1a4834b987b3da9c0a5c8f55ccd30cf89a1a3eeeadd18b3",
+    "license": "MIT OR Apache-2.0; locally generated Identity graph",
+    "license_path": "models/M8_SYNTHETIC_ONNX_LICENSE.txt",
+    "license_sha256": "11762333d44173f00c5bbe7e7e805105f1d75ab38c93b079807e33d23136d8a6"
+  },
+  "runtime": {
+    "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+    "cargo": "cargo 1.94.1 (29ea6fb6a 2026-03-24)",
+    "cargo_lock_sha256": "e0aab181c261ca6935d283d25969d6a8f0783724472bf464a1861ebc4f5c469f",
+    "onnxruntime": {
+      "dylib": "libonnxruntime.1.23.2.dylib",
+      "sha256": "92500010659b052368797e30c1841956b0efd699a8061ef8b3b25f27449c86e7",
+      "version": "1.23.2"
+    },
+    "ort_crate": "2.0.0-rc.1",
+    "fast_image_resize": "3.0.4",
+    "public_result_equal_to_instrumented_result": true,
+    "raw_shape": [
+      1,
+      3,
+      1024,
+      1024
+    ]
+  },
+  "input_dimensions": [
+    3,
+    2
+  ],
+  "model_output_dimensions": [
+    1024,
+    1024
+  ],
+  "stages": {
+    "decoded-rgb.f32le": "3d3e4d8ac30cb0bde5603ba33f1ae6d419bb687435a8b09b959a6e300420db0b",
+    "preprocessed-tensor.f32le": "f5b2a9b5a52b3bab6403dcd1748812418e1c6fab4330ae3822bff548adaad086",
+    "raw-onnx-output.f32le": "f5b2a9b5a52b3bab6403dcd1748812418e1c6fab4330ae3822bff548adaad086",
+    "restored-alpha.f32le": "2f88457c13bf8999846e4f9c1a7a5f9b08fe215ce194b834a6804853d773eb0e",
+    "final-straight-alpha-cutout.rgba": "6132a88429e568c0f08b53c90164f8ff781487163aa1be6ad0f79d71796e27ea"
+  }
+}

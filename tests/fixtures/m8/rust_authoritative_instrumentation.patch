@@ -1,0 +1,112 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 876ceca..dda6e34 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3 +3 @@
+-version = 3
++version = 4
+@@ -506,0 +507,10 @@ dependencies = [
++[[package]]
++name = "libloading"
++version = "0.8.9"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
++dependencies = [
++ "cfg-if",
++ "windows-link",
++]
++
+@@ -687,0 +698 @@ dependencies = [
++ "libloading",
+@@ -1386,0 +1398,6 @@ checksum = "53a85b86a771b1c87058196170769dd264f66c0782acf1ae6cc51bfd64b39082"
++[[package]]
++name = "windows-link"
++version = "0.2.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
++
+diff --git a/Cargo.toml b/Cargo.toml
+index 3b9f2ec..8db83c6 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -11,0 +12,2 @@ keywords = ["background-removal", "machine-learning", "onnx"]
++[workspace]
++
+@@ -15 +17 @@ keywords = ["background-removal", "machine-learning", "onnx"]
+-ort = { version = "2.0.0-rc.1", default-features = false, features = ["ndarray"] }
++ort = { version = "2.0.0-rc.1", default-features = false, features = ["ndarray", "load-dynamic"] }
+diff --git a/src/lib.rs b/src/lib.rs
+index c2b1085..5fabdc7 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -21,0 +22,4 @@ pub struct Rmbg {
++/// M8 temporary parity instrumentation; this method is not part of the clean
++/// pinned checkout and is only used from an isolated source copy.
++pub fn profile_source_commit() -> &'static str { "8ce479cac1f2940502da1a55e19d19183f4862f7" }
++
+@@ -94,0 +99,26 @@ impl Rmbg {
++
++    pub fn remove_background_with_stages(
++        &self,
++        original_img: &DynamicImage,
++    ) -> anyhow::Result<(DynamicImage, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>)> {
++        let img = preprocess_image(original_img)?;
++        let tensor = img.clone().into_raw_vec();
++        let input = img.insert_axis(Axis(0));
++        let inputs = ort::inputs![ML_MODEL_INPUT_NAME => input.view()]?;
++        let outputs = self.model.run(inputs)?;
++        let output = outputs[ML_MODEL_OUTPUT_NAME].try_extract_tensor()?;
++        let output_view = output.view();
++        let full_output: Vec<f32> = output_view.iter().copied().collect();
++        let output_2d: ArrayView<f32, Dim<[usize; 2]>> = output_view.slice(s![0, 0, .., ..]);
++        eprintln!("M8 output shape={:?} samples={:?} min={:?} max={:?}", output_view.shape(), [output_2d[[0, 0]], output_2d[[0, 1]], output_2d[[1, 0]], output_2d[[1023, 1023]]], output_2d.iter().copied().fold(f32::INFINITY, f32::min), output_2d.iter().copied().fold(f32::NEG_INFINITY, f32::max));
++        let image = postprocess_image(&output_2d)?;
++        let resized = resize_rgba(&image, original_img.width(), original_img.height())?;
++        let mask = DynamicImage::ImageRgba8(ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(original_img.width(), original_img.height(), resized).ok_or(anyhow!("invalid resized output"))?);
++        let restored_alpha = mask
++            .to_luma8()
++            .pixels()
++            .map(|pixel| pixel[0] as f32 / 255.0)
++            .collect();
++        let cutout = apply_mask(original_img, &mask);
++        Ok((cutout, tensor, full_output, restored_alpha, output_2d.iter().copied().collect()))
++    }
+diff --git a/src/bin/m8_capture.rs b/src/bin/m8_capture.rs
+new file mode 100644
+index 0000000..52418de
+--- /dev/null
++++ b/src/bin/m8_capture.rs
+@@ -0,0 +1,33 @@
++use image::{DynamicImage, ImageBuffer, Rgba};
++use rmbg::Rmbg;
++use std::{env, fs};
++
++fn f32le(values: &[f32]) -> Vec<u8> {
++    values.iter().flat_map(|v| v.to_le_bytes()).collect()
++}
++
++fn main() -> anyhow::Result<()> {
++    let model = env::args().nth(1).expect("model");
++    let out = env::args().nth(2).expect("output");
++    ort::init_from(env::var("ORT_DYLIB").expect("ORT_DYLIB")).commit()?;
++    let mut input = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(3, 2);
++    let values = [[0, 64, 255, 0], [128, 191, 26, 64], [51, 102, 204, 180], [255, 26, 0, 255], [77, 153, 230, 128], [204, 51, 102, 220]];
++    for (pixel, value) in input.pixels_mut().zip(values) { *pixel = Rgba(value); }
++    let image = DynamicImage::ImageRgba8(input.clone());
++    let session = Rmbg::new(model)?;
++    let public_cutout = session.remove_background(&image)?;
++    let (cutout, tensor, raw_full, restored_alpha, _raw_channel0) =
++        session.remove_background_with_stages(&image)?;
++    assert_eq!(public_cutout.to_rgba8().into_raw(), cutout.to_rgba8().into_raw());
++    fs::create_dir_all(&out)?;
++    let decoded = input
++        .pixels()
++        .flat_map(|pixel| pixel.0[..3].iter().map(|value| *value as f32 / 255.0))
++        .collect::<Vec<_>>();
++    fs::write(format!("{out}/decoded-rgb.f32le"), f32le(&decoded))?;
++    fs::write(format!("{out}/preprocessed-tensor.f32le"), f32le(&tensor))?;
++    fs::write(format!("{out}/raw-onnx-output.f32le"), f32le(&raw_full))?;
++    fs::write(format!("{out}/restored-alpha.f32le"), f32le(&restored_alpha))?;
++    fs::write(format!("{out}/final-straight-alpha-cutout.rgba"), cutout.to_rgba8().into_raw())?;
++    Ok(())
++}

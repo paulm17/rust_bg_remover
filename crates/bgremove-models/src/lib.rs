@@ -32,7 +32,13 @@ pub enum ModelEncoding {
     #[serde(rename = "other")]
     Other,
 }
-string_enum!(PreprocessingProfile { ImglyIsnet => "imgly-isnet", RembgDis => "rembg-dis", Generic => "generic" });
+string_enum!(PreprocessingProfile {
+    ImglyIsnet => "imgly-isnet",
+    RembgDis => "rembg-dis",
+    RmbgRust => "rmbg-rust",
+    RembgBria => "rembg-bria",
+    Generic => "generic"
+});
 string_enum!(ProfileOutputNormalization { Clamp => "clamp", SafeMinMax => "safe-per-image-minmax" });
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -91,7 +97,9 @@ impl PreprocessingProfileManifest {
                     && self.output_normalization == ProfileOutputNormalization::SafeMinMax,
                 "rembg DIS profile contract mismatch"
             ),
-            PreprocessingProfile::Generic => bail!("generic is not an M4 profile"),
+            PreprocessingProfile::Generic
+            | PreprocessingProfile::RmbgRust
+            | PreprocessingProfile::RembgBria => bail!("profile is not an M4 profile"),
         }
         Ok(())
     }
@@ -151,6 +159,18 @@ pub struct ModelManifest {
     pub output_normalization: OutputNormalization,
     pub source_url: String,
     pub source_commit: String,
+    /// SHA-256 of the clean, tracked upstream adapter/source snapshot.  This
+    /// is intentionally distinct from the model and licence hashes.
+    #[serde(default)]
+    pub source_tree_sha256: String,
+    /// The source repository's code licence is tracked separately from the
+    /// checkpoint licence.  Empty keeps old M0-M7 manifests compatible.
+    #[serde(default)]
+    pub source_license_identifier: String,
+    #[serde(default)]
+    pub source_license_file: String,
+    #[serde(default)]
+    pub source_license_sha256: String,
     pub model_version: String,
     pub license_identifier: String,
     pub license_file: String,
@@ -208,20 +228,24 @@ impl ModelManifest {
         let workspace = base
             .parent()
             .ok_or_else(|| anyhow::anyhow!("manifest has no workspace parent"))?;
-        let root = match self.algorithm_family.as_str() {
-            "u2net" => workspace.join("projects/python/rembg"),
-            "birefnet" => workspace.join("projects/python/rembg"),
-            "basnet" | "deeplabv3" | "tracer-b7" => {
+        let root = match (self.algorithm_family.as_str(), self.model_variant.as_str()) {
+            ("u2net", _) => workspace.join("projects/python/rembg"),
+            ("birefnet", _) => workspace.join("projects/python/rembg"),
+            ("rmbg", "1.4") => workspace.join("projects/rust/rmbg"),
+            ("rmbg", "2.0") => workspace.join("projects/python/rembg"),
+            ("basnet", _) | ("deeplabv3", _) | ("tracer-b7", _) => {
                 workspace.join("projects/python/image-background-remove-tool")
             }
             _ => workspace.join("projects/javascript/background-removal-js"),
         };
         let allowed = match kind {
-            "license" if self.algorithm_family == "birefnet" => workspace.to_path_buf(),
+            "license" if matches!(self.algorithm_family.as_str(), "birefnet" | "rmbg") => {
+                workspace.to_path_buf()
+            }
             "model"
                 if matches!(
                     self.algorithm_family.as_str(),
-                    "u2net" | "birefnet" | "basnet" | "deeplabv3" | "tracer-b7"
+                    "u2net" | "birefnet" | "rmbg" | "basnet" | "deeplabv3" | "tracer-b7"
                 ) =>
             {
                 root.clone()
@@ -272,6 +296,35 @@ impl ModelManifest {
             !self.source_commit.trim().is_empty(),
             "model source commit is empty"
         );
+        if !self.source_tree_sha256.is_empty() {
+            ensure!(
+                self.source_tree_sha256.len() == 64
+                    && self
+                        .source_tree_sha256
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                "model source_tree_sha256 must be 64 lowercase hexadecimal characters"
+            );
+        }
+        for (name, value) in [
+            ("source_license_file", self.source_license_file.as_str()),
+            ("source_license_sha256", self.source_license_sha256.as_str()),
+        ] {
+            if !value.is_empty() {
+                ensure!(
+                    value.len() == 64 || name == "source_license_file",
+                    "model {name} has malformed source licence metadata"
+                );
+                if name == "source_license_sha256" {
+                    ensure!(
+                        value
+                            .bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                        "model source_license_sha256 must be lowercase hexadecimal"
+                    );
+                }
+            }
+        }
         for (name, value) in [
             ("input_name", self.input_name.as_str()),
             ("output_name", self.output_name.as_str()),
@@ -343,6 +396,11 @@ impl ModelManifest {
 
     pub fn verify_model_hash(&self, manifest_path: &Path) -> Result<PathBuf> {
         let base = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+        ensure!(
+            self.intended_use_approved,
+            "model {} is not approved for intended use",
+            self.id
+        );
         let license = base.join(&self.license_file).canonicalize()?;
         let canonical_base = base.canonicalize()?;
         ensure!(self.external || license.starts_with(&canonical_base),
@@ -377,11 +435,6 @@ impl ModelManifest {
             self.id,
             self.sha256,
             actual
-        );
-        ensure!(
-            self.intended_use_approved,
-            "model {} is not approved for intended use",
-            self.id
         );
         Ok(path)
     }
@@ -614,5 +667,62 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>()
         );
         assert!(manifests.iter().all(|manifest| manifest.sha256.len() == 64));
+    }
+
+    #[test]
+    fn m8_rmbg_registry_keeps_profiles_and_restrictive_weights_separate() {
+        let rust =
+            parse_toml(&std::fs::read_to_string("../../models/m8_rmbg_1_4.toml").unwrap()).unwrap();
+        let python =
+            parse_toml(&std::fs::read_to_string("../../models/m8_rmbg_2_0.toml").unwrap()).unwrap();
+        assert_eq!(rust.preprocessing_profile, PreprocessingProfile::RmbgRust);
+        assert_eq!(
+            python.preprocessing_profile,
+            PreprocessingProfile::RembgBria
+        );
+        assert_eq!(rust.resize_filter, ResizeFilter::Bilinear);
+        assert_eq!(python.resize_filter, ResizeFilter::Lanczos3);
+        assert!(!rust.intended_use_approved && !python.intended_use_approved);
+        assert_ne!(rust.source_commit, python.source_commit);
+        assert!(rust.source_tree_sha256.len() == 64 && python.source_tree_sha256.len() == 64);
+        assert_eq!(
+            rust.source_tree_sha256,
+            "f9fc3538d1e167bc30268dae85d664fa59a97897eab65024fcb04d5eca248417"
+        );
+        assert_eq!(
+            python.source_tree_sha256,
+            "a9c2584b47370c5f7f71e0049c9130a311b028150e444ed979ffafbccdd6b058"
+        );
+        assert_ne!(rust.license_sha256, python.license_sha256);
+        for (path, expected) in [
+            (
+                "../../models/M8_RMBG_1_4_LICENSE_METADATA.txt",
+                rust.license_sha256.as_str(),
+            ),
+            (
+                "../../models/M8_RMBG_2_0_LICENSE_METADATA.txt",
+                python.license_sha256.as_str(),
+            ),
+        ] {
+            let digest = sha2::Sha256::digest(std::fs::read(path).unwrap())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            assert_eq!(digest, expected);
+        }
+    }
+
+    #[test]
+    fn m8_external_roots_are_profile_specific() {
+        let rust_path = std::path::Path::new("../../models/m8_rmbg_1_4.toml");
+        let mut rust = parse_toml(&std::fs::read_to_string(rust_path).unwrap()).unwrap();
+        rust.file = "../projects/rust/rmbg/Cargo.toml".into();
+        assert!(rust.resolve_model_path(rust_path).is_ok());
+        let python_path = std::path::Path::new("../../models/m8_rmbg_2_0.toml");
+        let mut python = parse_toml(&std::fs::read_to_string(python_path).unwrap()).unwrap();
+        python.file = "../projects/python/rembg/u2net.onnx".into();
+        assert!(python.resolve_model_path(python_path).is_ok());
+        python.file = "../projects/rust/rmbg/Cargo.toml".into();
+        assert!(python.resolve_model_path(python_path).is_err());
     }
 }

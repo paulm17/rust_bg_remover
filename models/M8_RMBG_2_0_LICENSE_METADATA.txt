@@ -1,0 +1,6 @@
+Checkpoint licence metadata for BRIA RMBG-2.0 (not the upstream licence text).
+
+Upstream model card: https://huggingface.co/briaai/RMBG-2.0
+Licence identifier: CC BY-NC 4.0; commercial agreement required.
+The checkpoint is not included. This file grants no rights and is only a
+pinned provenance record.

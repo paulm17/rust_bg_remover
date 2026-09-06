@@ -1,0 +1,64 @@
+{
+  "schema": "m8.rmbg-profile-fixture.v2",
+  "authoritative_sources_executed": true,
+  "weights_status": "excluded-by-license-and-not-present",
+  "source": {
+    "rust_rmbg_commit": "8ce479cac1f2940502da1a55e19d19183f4862f7",
+    "rembg_commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+    "rust_instrumentation_patch_sha256": "14535186936f2e72c073119ee2461c1ee394b8ffd957b1fd131bf80b100b7856",
+    "rust_tracked_source_clean": true,
+    "authoritative_reports": [
+      "tests/fixtures/m8/authoritative/rust-rmbg/report.json",
+      "tests/fixtures/m8/authoritative/report.json"
+    ]
+  },
+  "tolerances": {
+    "decoded_rgb": 0.0,
+    "preprocessed_tensor": 2e-05,
+    "raw_output": 0.0,
+    "restored_alpha": 0.0,
+    "final_cutout": 0.0
+  },
+  "profiles": [
+    {
+      "profile": "rmbg-rust",
+      "input_dimensions": [
+        3,
+        2
+      ],
+      "model_output_shape": [
+        1,
+        3,
+        1024,
+        1024
+      ],
+      "stages": {
+        "decoded-rgb.f32le": "3d3e4d8ac30cb0bde5603ba33f1ae6d419bb687435a8b09b959a6e300420db0b",
+        "preprocessed-tensor.f32le": "f5b2a9b5a52b3bab6403dcd1748812418e1c6fab4330ae3822bff548adaad086",
+        "raw-onnx-output.f32le": "f5b2a9b5a52b3bab6403dcd1748812418e1c6fab4330ae3822bff548adaad086",
+        "restored-alpha.f32le": "2f88457c13bf8999846e4f9c1a7a5f9b08fe215ce194b834a6804853d773eb0e",
+        "final-straight-alpha-cutout.rgba": "6132a88429e568c0f08b53c90164f8ff781487163aa1be6ad0f79d71796e27ea"
+      }
+    },
+    {
+      "profile": "rembg-bria",
+      "input_dimensions": [
+        3,
+        2
+      ],
+      "model_output_shape": [
+        1,
+        3,
+        1024,
+        1024
+      ],
+      "stages": {
+        "decoded-rgb.f32le": "3d3e4d8ac30cb0bde5603ba33f1ae6d419bb687435a8b09b959a6e300420db0b",
+        "preprocessed-tensor.f32le": "9f7b6a6ed49b900fe86d5d4792ab6f4290664facd70f61a71bbbd96446b3e3ae",
+        "raw-onnx-output.f32le": "be920b7b113fdd535768f9dc47fce4b4d4d00f0e4943993387f908df7dd9de98",
+        "restored-alpha.f32le": "4b860105f9091fe8cd78252e40336f7fb0cbaec869f0c2296c483d8f9eb7a18a",
+        "final-straight-alpha-cutout.rgba": "ca480e4728c019963897bb47ef11753430d774301ab5141c687e944b28dc20d5"
+      }
+    }
+  ]
+}
