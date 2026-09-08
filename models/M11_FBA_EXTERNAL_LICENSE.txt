@@ -1,0 +1,18 @@
+M11 external FBA checkpoint metadata
+
+The pinned CarveKit source is Apache-2.0, but the external fba_matting.pth
+checkpoint is not present in this workspace and has not been downloaded. This
+metadata does not grant a license or approve intended deployment. The external
+manifest remains intended_use_approved=false and is fail-closed before model
+access.
+
+Pinned remote-weight facts (metadata only; not downloaded):
+
+- revision: `Carve/fba@a5d3457df0fb9c88ea19ed700d409756ca2069d1`
+- artifact: `fba_matting.pth`
+- bytes: `138813960`
+- SHA-256: `a0eb7132f70f4d69d0bcb53763ec4e5ff1d1c65237ef9a9d69f9c94da8b85dee`
+- downloader SHA-512: `890906ec94c1bfd2ad08707a63e4ccb0955d7f5d25e32853950c24c784cbad2e59be277999defc3754905d0f15aa75702cdead3cfe669ff72f08811c52971613`
+
+The upstream model artifact has no clear model-card license in the pinned
+source, so this metadata does not approve commercial or any intended use.

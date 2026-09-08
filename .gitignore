@@ -23,8 +23,12 @@
 !/runs/m9-trimap/report.json
 !/runs/m10-matting/
 !/runs/m10-matting/*
+!/runs/m11-fba/
+!/runs/m11-fba/*
 /models/*.onnx
 /models/*.ort
+!/models/fixtures/
+!/models/fixtures/m11_fba_synthetic.onnx
 /corpus/inputs/
 /corpus/references/
 /projects/

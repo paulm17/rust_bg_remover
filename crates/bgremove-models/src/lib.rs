@@ -37,7 +37,8 @@ string_enum!(PreprocessingProfile {
     RembgDis => "rembg-dis",
     RmbgRust => "rmbg-rust",
     RembgBria => "rembg-bria",
-    Generic => "generic"
+    Generic => "generic",
+    CarveKitFba => "carvekit-fba"
 });
 string_enum!(ProfileOutputNormalization { Clamp => "clamp", SafeMinMax => "safe-per-image-minmax" });
 
@@ -99,7 +100,8 @@ impl PreprocessingProfileManifest {
             ),
             PreprocessingProfile::Generic
             | PreprocessingProfile::RmbgRust
-            | PreprocessingProfile::RembgBria => bail!("profile is not an M4 profile"),
+            | PreprocessingProfile::RembgBria
+            | PreprocessingProfile::CarveKitFba => bail!("profile is not an M4 profile"),
         }
         Ok(())
     }
@@ -163,6 +165,8 @@ pub struct ModelManifest {
     /// is intentionally distinct from the model and licence hashes.
     #[serde(default)]
     pub source_tree_sha256: String,
+    #[serde(default)]
+    pub source_relevant_files_sha256: String,
     /// The source repository's code licence is tracked separately from the
     /// checkpoint licence.  Empty keeps old M0-M7 manifests compatible.
     #[serde(default)]
@@ -181,6 +185,12 @@ pub struct ModelManifest {
     pub input_shape: Vec<DimensionSpec>,
     #[serde(default)]
     pub output_shape: Vec<DimensionSpec>,
+    /// Additional named inputs for multi-input contracts such as FBA. Kept
+    /// generic so inspection can fail closed before runtime creation.
+    #[serde(default)]
+    pub auxiliary_input_names: Vec<String>,
+    #[serde(default)]
+    pub auxiliary_input_shapes: Vec<Vec<DimensionSpec>>,
     #[serde(default)]
     pub input_type: Option<TensorElementType>,
     #[serde(default)]
@@ -198,6 +208,11 @@ pub struct ModelManifest {
     pub model_encoding: ModelEncoding,
     #[serde(default = "default_preprocessing_profile")]
     pub preprocessing_profile: PreprocessingProfile,
+    /// Explicit two-stage CarveKit FBA preprocessing contract.  This is kept
+    /// separate from the generic resize_filter so a manifest cannot label a
+    /// Pillow bicubic + OpenCV Lanczos4 pipeline as a single Lanczos3 step.
+    #[serde(default)]
+    pub preprocessing_contract: String,
     /// An external file is never fetched. It is permitted only to make the
     /// checked-in reference-tree weights auditable without committing them.
     #[serde(default)]
@@ -236,16 +251,17 @@ impl ModelManifest {
             ("basnet", _) | ("deeplabv3", _) | ("tracer-b7", _) => {
                 workspace.join("projects/python/image-background-remove-tool")
             }
+            ("fba", _) => workspace.join("projects/python/image-background-remove-tool"),
             _ => workspace.join("projects/javascript/background-removal-js"),
         };
         let allowed = match kind {
-            "license" if matches!(self.algorithm_family.as_str(), "birefnet" | "rmbg") => {
+            "license" if matches!(self.algorithm_family.as_str(), "birefnet" | "rmbg" | "fba") => {
                 workspace.to_path_buf()
             }
             "model"
                 if matches!(
                     self.algorithm_family.as_str(),
-                    "u2net" | "birefnet" | "rmbg" | "basnet" | "deeplabv3" | "tracer-b7"
+                    "u2net" | "birefnet" | "rmbg" | "basnet" | "deeplabv3" | "tracer-b7" | "fba"
                 ) =>
             {
                 root.clone()
@@ -306,6 +322,16 @@ impl ModelManifest {
                 "model source_tree_sha256 must be 64 lowercase hexadecimal characters"
             );
         }
+        if !self.source_relevant_files_sha256.is_empty() {
+            ensure!(
+                self.source_relevant_files_sha256.len() == 64
+                    && self
+                        .source_relevant_files_sha256
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                "model source_relevant_files_sha256 must be 64 lowercase hexadecimal characters"
+            );
+        }
         for (name, value) in [
             ("source_license_file", self.source_license_file.as_str()),
             ("source_license_sha256", self.source_license_sha256.as_str()),
@@ -335,6 +361,13 @@ impl ModelManifest {
             ("sha256", self.sha256.as_str()),
             ("license_sha256", self.license_sha256.as_str()),
         ] {
+            if name == "sha256"
+                && value == "unavailable"
+                && self.external
+                && !self.intended_use_approved
+            {
+                continue;
+            }
             ensure!(
                 value.len() == 64
                     && value
@@ -376,6 +409,21 @@ impl ModelManifest {
         for dimension in &self.output_shape {
             dimension.validate("output_shape")?;
         }
+        ensure!(
+            self.auxiliary_input_names.len() == self.auxiliary_input_shapes.len(),
+            "auxiliary input names/shapes length mismatch"
+        );
+        ensure!(
+            self.auxiliary_input_names
+                .iter()
+                .all(|name| !name.trim().is_empty()),
+            "auxiliary input name is empty"
+        );
+        for shape in &self.auxiliary_input_shapes {
+            for dimension in shape {
+                dimension.validate("auxiliary_input_shape")?;
+            }
+        }
         Ok(())
     }
 
@@ -399,6 +447,11 @@ impl ModelManifest {
         ensure!(
             self.intended_use_approved,
             "model {} is not approved for intended use",
+            self.id
+        );
+        ensure!(
+            self.sha256 != "unavailable",
+            "model {} has no locally available checkpoint hash",
             self.id
         );
         let license = base.join(&self.license_file).canonicalize()?;
@@ -710,6 +763,46 @@ mod tests {
                 .collect::<String>();
             assert_eq!(digest, expected);
         }
+    }
+
+    #[test]
+    fn m11_fba_manifests_separate_synthetic_fixture_and_unavailable_external_weights() {
+        let synthetic_path = std::path::Path::new("../../models/m11_fba_synthetic.toml");
+        let synthetic = parse_toml(&std::fs::read_to_string(synthetic_path).unwrap()).unwrap();
+        assert_eq!(synthetic.algorithm_family, "fba");
+        assert_eq!(
+            synthetic.preprocessing_profile,
+            PreprocessingProfile::CarveKitFba
+        );
+        assert_eq!(synthetic.resize_filter, ResizeFilter::Bicubic);
+        assert_eq!(
+            synthetic.preprocessing_contract,
+            "pillow-bicubic-then-opencv-lanczos4-pad8"
+        );
+        assert_eq!(synthetic.output_shape.len(), 4);
+        assert!(synthetic.intended_use_approved);
+        assert!(synthetic.verify_model_hash(synthetic_path).is_ok());
+        let external_path = std::path::Path::new("../../models/m11_fba_external.toml");
+        let external = parse_toml(&std::fs::read_to_string(external_path).unwrap()).unwrap();
+        assert!(external.external);
+        assert!(!external.intended_use_approved);
+        assert_eq!(external.sha256, "unavailable");
+        let error = external.verify_model_hash(external_path).unwrap_err();
+        assert!(error.to_string().contains("not approved for intended use"));
+        let license_digest = sha2::Sha256::digest(
+            std::fs::read("../../models/M11_FBA_EXTERNAL_LICENSE.txt").unwrap(),
+        )
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+        assert_eq!(license_digest, external.license_sha256);
+        let external_1024_path = std::path::Path::new("../../models/m11_fba_external_1024.toml");
+        let external_1024 =
+            parse_toml(&std::fs::read_to_string(external_1024_path).unwrap()).unwrap();
+        assert!(external_1024.external && !external_1024.intended_use_approved);
+        assert_eq!(external_1024.width, 1024);
+        assert_eq!(external_1024.input_shape[2], DimensionSpec::Static(1024));
+        assert_eq!(external_1024.output_shape[2], DimensionSpec::Static(1024));
     }
 
     #[test]

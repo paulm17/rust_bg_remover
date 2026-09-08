@@ -312,6 +312,163 @@ pub fn resize_u8_pillow_bicubic(
     Ok(out)
 }
 
+/// OpenCV INTER_LANCZOS4 on float planes, including OpenCV's edge replication
+/// edge rule. CarveKit uses this only for padding to an 8-pixel multiple and
+/// for restoring predictions to the canonical trimap dimensions.
+pub fn resize_f32_opencv_lanczos4(
+    src: &[f32],
+    src_width: u32,
+    src_height: u32,
+    channels: usize,
+    dst_width: u32,
+    dst_height: u32,
+) -> Result<Vec<f32>> {
+    ensure!(
+        src_width > 0 && src_height > 0 && dst_width > 0 && dst_height > 0,
+        "OpenCV resize dimensions must be positive"
+    );
+    ensure!(channels > 0, "OpenCV resize channels must be positive");
+    let source_len = (src_width as usize)
+        .checked_mul(src_height as usize)
+        .and_then(|v| v.checked_mul(channels))
+        .ok_or_else(|| anyhow::anyhow!("OpenCV resize source size overflow"))?;
+    ensure!(
+        src.len() == source_len,
+        "OpenCV resize source length mismatch"
+    );
+    let out_len = (dst_width as usize)
+        .checked_mul(dst_height as usize)
+        .and_then(|v| v.checked_mul(channels))
+        .ok_or_else(|| anyhow::anyhow!("OpenCV resize output size overflow"))?;
+    ensure!(
+        out_len <= 64 * 1024 * 1024,
+        "OpenCV resize exceeds memory cap"
+    );
+    fn sinc(x: f64) -> f64 {
+        if x == 0.0 {
+            1.0
+        } else {
+            let p = std::f64::consts::PI * x;
+            p.sin() / p
+        }
+    }
+    fn border_replicate(index: isize, length: isize) -> usize {
+        index.clamp(0, length - 1) as usize
+    }
+    fn coeffs(input: usize, output: usize) -> Vec<(isize, Vec<f64>)> {
+        let scale = input as f64 / output as f64;
+        (0..output)
+            .map(|i| {
+                let center = (i as f64 + 0.5) * scale - 0.5;
+                let left = center.floor() as isize - 3;
+                let mut weights = (0..8)
+                    .map(|k| {
+                        let x = left + k;
+                        let d = x as f64 - center;
+                        if d.abs() < 4.0 {
+                            sinc(d) * sinc(d / 4.0)
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let sum: f64 = weights.iter().sum();
+                if sum != 0.0 {
+                    for weight in &mut weights {
+                        *weight /= sum;
+                    }
+                }
+                (left, weights)
+            })
+            .collect()
+    }
+    let xcoeff = coeffs(src_width as usize, dst_width as usize);
+    let ycoeff = coeffs(src_height as usize, dst_height as usize);
+    let mut horizontal = vec![0.0f64; dst_width as usize * src_height as usize * channels];
+    for y in 0..src_height as usize {
+        for (x, (start, weights)) in xcoeff.iter().enumerate() {
+            for c in 0..channels {
+                horizontal[(y * dst_width as usize + x) * channels + c] = weights
+                    .iter()
+                    .enumerate()
+                    .map(|(k, weight)| {
+                        src[(y * src_width as usize
+                            + border_replicate(*start + k as isize, src_width as isize))
+                            * channels
+                            + c] as f64
+                            * weight
+                    })
+                    .sum();
+            }
+        }
+    }
+    let mut output = vec![0.0f32; out_len];
+    for (y, (start, weights)) in ycoeff.iter().enumerate() {
+        for x in 0..dst_width as usize {
+            for c in 0..channels {
+                output[(y * dst_width as usize + x) * channels + c] = weights
+                    .iter()
+                    .enumerate()
+                    .map(|(k, weight)| {
+                        horizontal[(border_replicate(*start + k as isize, src_height as isize)
+                            * dst_width as usize
+                            + x)
+                            * channels
+                            + c]
+                            * weight
+                    })
+                    .sum::<f64>()
+                    as f32;
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn resize_f32_opencv_linear(
+    src: &[f32],
+    src_width: u32,
+    src_height: u32,
+    channels: usize,
+    dst_width: u32,
+    dst_height: u32,
+) -> Result<Vec<f32>> {
+    ensure!(src_width > 0 && src_height > 0 && dst_width > 0 && dst_height > 0);
+    let source_len = (src_width as usize)
+        .checked_mul(src_height as usize)
+        .and_then(|v| v.checked_mul(channels))
+        .ok_or_else(|| anyhow::anyhow!("FBA linear resize dimensions overflow"))?;
+    ensure!(
+        src.len() == source_len,
+        "FBA linear resize source length mismatch"
+    );
+    let mut out = vec![0.0; (dst_width as usize) * (dst_height as usize) * channels];
+    let sx = src_width as f64 / dst_width as f64;
+    let sy = src_height as f64 / dst_height as f64;
+    for y in 0..dst_height as usize {
+        let fy = ((y as f64 + 0.5) * sy - 0.5).max(0.0);
+        let y0 = fy.floor() as usize;
+        let y1 = (y0 + 1).min(src_height as usize - 1);
+        let wy = fy - y0 as f64;
+        for x in 0..dst_width as usize {
+            let fx = ((x as f64 + 0.5) * sx - 0.5).max(0.0);
+            let x0 = fx.floor() as usize;
+            let x1 = (x0 + 1).min(src_width as usize - 1);
+            let wx = fx - x0 as f64;
+            for c in 0..channels {
+                let at = |yy: usize, xx: usize| {
+                    src[(yy * src_width as usize + xx) * channels + c] as f64
+                };
+                out[(y * dst_width as usize + x) * channels + c] = ((1.0 - wy)
+                    * ((1.0 - wx) * at(y0, x0) + wx * at(y0, x1))
+                    + wy * ((1.0 - wx) * at(y1, x0) + wx * at(y1, x1)))
+                    as f32;
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Pillow's 8-bit bilinear resampler, matching the coefficient convention
 /// used by CarveKit's TRACER postprocessing (`Image.resize(..., BILINEAR)`).
 pub fn resize_u8_pillow_bilinear(
@@ -486,7 +643,8 @@ pub fn isnet_preprocess_rgb(
         PreprocessingProfile::RembgDis => resize_u8_lanczos(&bytes, w, h, 3, 1024, 1024)?,
         PreprocessingProfile::Generic
         | PreprocessingProfile::RmbgRust
-        | PreprocessingProfile::RembgBria => unreachable!(),
+        | PreprocessingProfile::RembgBria
+        | PreprocessingProfile::CarveKitFba => unreachable!(),
     };
     let rembg_max = if profile == PreprocessingProfile::RembgDis {
         resized.iter().copied().max().unwrap_or(0).max(1) as f32
@@ -502,7 +660,8 @@ pub fn isnet_preprocess_rgb(
                 PreprocessingProfile::RembgDis => byte / rembg_max - 0.5,
                 PreprocessingProfile::Generic
                 | PreprocessingProfile::RmbgRust
-                | PreprocessingProfile::RembgBria => unreachable!(),
+                | PreprocessingProfile::RembgBria
+                | PreprocessingProfile::CarveKitFba => unreachable!(),
             };
         }
     }
@@ -668,7 +827,8 @@ impl IsnetSegmenter {
             }
             PreprocessingProfile::Generic
             | PreprocessingProfile::RmbgRust
-            | PreprocessingProfile::RembgBria => unreachable!(),
+            | PreprocessingProfile::RembgBria
+            | PreprocessingProfile::CarveKitFba => unreachable!(),
         }
         Ok(Self {
             pool: SessionPool::new(
@@ -707,7 +867,8 @@ impl IsnetSegmenter {
             }
             PreprocessingProfile::Generic
             | PreprocessingProfile::RmbgRust
-            | PreprocessingProfile::RembgBria => unreachable!(),
+            | PreprocessingProfile::RembgBria
+            | PreprocessingProfile::CarveKitFba => unreachable!(),
         };
         let raw = match raw_output.shape.as_slice() {
             [1, 1, 1024, 1024] => raw_output.values.clone(),
@@ -724,7 +885,8 @@ impl IsnetSegmenter {
             }
             PreprocessingProfile::Generic
             | PreprocessingProfile::RmbgRust
-            | PreprocessingProfile::RembgBria => unreachable!(),
+            | PreprocessingProfile::RembgBria
+            | PreprocessingProfile::CarveKitFba => unreachable!(),
         }?;
         Ok(IsnetRunEvidence {
             tensor: input,
@@ -786,10 +948,14 @@ pub struct ModelInspection {
     pub input_type: String,
     pub input_shape: Vec<i64>,
     pub input_symbols: Vec<String>,
+    pub input_names: Vec<String>,
+    pub input_types: Vec<String>,
+    pub input_shapes: Vec<Vec<i64>>,
     pub output_name: String,
     pub output_type: String,
     pub output_shape: Vec<i64>,
     pub output_symbols: Vec<String>,
+    pub output_names: Vec<String>,
     pub provider: ProviderReport,
 }
 
@@ -1031,8 +1197,34 @@ fn inspect_session(
     let actual_inputs = session
         .inputs()
         .iter()
-        .map(|x| x.name())
+        .map(|x| x.name().to_owned())
         .collect::<Vec<_>>();
+    let mut expected_input_names = vec![m.input_name.clone()];
+    expected_input_names.extend(m.auxiliary_input_names.iter().cloned());
+    ensure!(
+        m.auxiliary_input_names.len() == m.auxiliary_input_shapes.len(),
+        "model {} auxiliary input names/shapes length mismatch",
+        m.id
+    );
+    ensure!(
+        expected_input_names.len() == actual_inputs.len(),
+        "model {} input count mismatch: expected {:?}, actual {:?}",
+        m.id,
+        expected_input_names,
+        actual_inputs
+    );
+    let mut expected_sorted = expected_input_names.clone();
+    let mut actual_sorted = actual_inputs.clone();
+    expected_sorted.sort();
+    actual_sorted.sort();
+    ensure!(
+        expected_sorted == actual_sorted
+            && expected_sorted.windows(2).all(|pair| pair[0] != pair[1]),
+        "model {} input names must exactly match unique manifest names; expected {:?}, actual {:?}",
+        m.id,
+        expected_input_names,
+        actual_inputs
+    );
     let input = session
         .inputs()
         .iter()
@@ -1048,7 +1240,7 @@ fn inspect_session(
     let actual_outputs = session
         .outputs()
         .iter()
-        .map(|x| x.name())
+        .map(|x| x.name().to_owned())
         .collect::<Vec<_>>();
     let output = session
         .outputs()
@@ -1096,6 +1288,53 @@ fn inspect_session(
             other
         ),
     };
+    let mut inspected_input_types = Vec::with_capacity(actual_inputs.len());
+    let mut inspected_input_shapes = Vec::with_capacity(actual_inputs.len());
+    for actual in session.inputs().iter() {
+        let (actual_type, actual_shape) = match actual.dtype() {
+            ort::value::ValueType::Tensor { ty, shape, .. } => (*ty, shape.to_vec()),
+            other => bail!(
+                "model {} input {} expected tensor, actual {}",
+                m.id,
+                actual.name(),
+                other
+            ),
+        };
+        if let Some(expected_type) = m.input_type {
+            ensure!(
+                actual_type == ort_type(expected_type),
+                "model {} input {} element type mismatch: expected {}, actual {}",
+                m.id,
+                actual.name(),
+                ort_type(expected_type),
+                actual_type
+            );
+        }
+        let expected_shape = if actual.name() == m.input_name {
+            &m.input_shape
+        } else {
+            let aux_index = m
+                .auxiliary_input_names
+                .iter()
+                .position(|name| name == actual.name())
+                .ok_or_else(|| anyhow::anyhow!("unexpected model input {}", actual.name()))?;
+            &m.auxiliary_input_shapes[aux_index]
+        };
+        ensure!(
+            expected_shape.len() == actual_shape.len()
+                && expected_shape
+                    .iter()
+                    .zip(&actual_shape)
+                    .all(|(expected, actual)| dim_matches(expected, *actual)),
+            "model {} input {} shape mismatch: expected {:?}, actual {:?}",
+            m.id,
+            actual.name(),
+            expected_shape,
+            actual_shape
+        );
+        inspected_input_types.push(actual_type.to_string());
+        inspected_input_shapes.push(actual_shape);
+    }
     if let Some(t) = m.input_type {
         ensure!(
             itype == ort_type(t),
@@ -1164,10 +1403,14 @@ fn inspect_session(
         input_type: itype.to_string(),
         input_shape: ishape,
         input_symbols: isymbols,
+        input_names: actual_inputs,
+        input_types: inspected_input_types,
+        input_shapes: inspected_input_shapes,
         output_name: m.output_name.clone(),
         output_type: otype.to_string(),
         output_shape: oshape,
         output_symbols: osymbols,
+        output_names: actual_outputs,
         provider,
     })
 }
@@ -1430,6 +1673,103 @@ impl VerifiedSession {
             "model {} output {} contains NaN/Inf",
             self.manifest.id,
             self.manifest.output_name
+        );
+        validate_output_contract(
+            &self.manifest.id,
+            &self.manifest.output_name,
+            &self.inspection.output_shape,
+            shape,
+            data.len(),
+        )?;
+        Ok(TensorOutput {
+            shape: shape.to_vec(),
+            values: data.to_vec(),
+        })
+    }
+    pub fn run_four(&mut self, inputs: [(&str, &[i64], &[f32]); 4]) -> Result<TensorOutput> {
+        ensure!(
+            inputs[0].0 == self.manifest.input_name,
+            "model {} primary input name mismatch",
+            self.manifest.id
+        );
+        ensure!(
+            inputs[1].0 == "trimap"
+                && inputs[2].0 == "image_normalized"
+                && inputs[3].0 == "trimap_transformed"
+                && [inputs[0].0, inputs[1].0, inputs[2].0, inputs[3].0]
+                    .windows(2)
+                    .all(|pair| pair[0] != pair[1]),
+            "model {} FBA input names are invalid or duplicated",
+            self.manifest.id
+        );
+        for &(name, shape, values) in &inputs {
+            ensure!(
+                shape.iter().all(|dimension| *dimension > 0),
+                "model input {name} has invalid shape"
+            );
+            ensure!(
+                checked_numel(shape, "input")? == values.len(),
+                "model input {name} value count mismatch"
+            );
+            ensure!(
+                values.iter().all(|value| value.is_finite()),
+                "model input {name} contains NaN/Inf"
+            );
+        }
+        ensure!(
+            inputs[0].1.len() == self.inspection.input_shape.len()
+                && inputs[0]
+                    .1
+                    .iter()
+                    .zip(&self.inspection.input_shape)
+                    .all(|(actual, expected)| *expected < 0 || actual == expected),
+            "model {} primary input shape mismatch",
+            self.manifest.id
+        );
+        for (input_index, (_, shape, _)) in inputs.iter().enumerate() {
+            let expected = if input_index == 0 {
+                &self.manifest.input_shape
+            } else {
+                &self.manifest.auxiliary_input_shapes[input_index - 1]
+            };
+            ensure!(
+                shape.len() == expected.len()
+                    && shape
+                        .iter()
+                        .zip(expected)
+                        .all(|(actual, spec)| dim_matches(spec, *actual)),
+                "model {} input {} shape does not match manifest",
+                self.manifest.id,
+                inputs[input_index].0
+            );
+        }
+        let tensors =
+            inputs.map(|(_, shape, values)| Tensor::from_array((shape.to_vec(), values.to_vec())));
+        let [image, trimap, image_normalized, trimap_transformed] = tensors;
+        let outputs = self.session.run(ort::inputs![
+            inputs[0].0 => image?,
+            inputs[1].0 => trimap?,
+            inputs[2].0 => image_normalized?,
+            inputs[3].0 => trimap_transformed?,
+        ])?;
+        self.run_count += 1;
+        let out = outputs.get(&self.manifest.output_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "model {} declared output {} not returned",
+                self.manifest.id,
+                self.manifest.output_name
+            )
+        })?;
+        let (shape, data) = out.try_extract_tensor::<f32>().with_context(|| {
+            format!(
+                "model {} output {} must be f32",
+                self.manifest.id, self.manifest.output_name
+            )
+        })?;
+        ensure!(
+            data.iter().all(|value| value.is_finite()),
+            "model {} output contains NaN/Inf",
+            self.manifest.id
         );
         validate_output_contract(
             &self.manifest.id,
@@ -2915,6 +3255,971 @@ pub fn carvekit_imagenet_preprocess_rgb(
         shape: vec![1, 3, resize_h as i64, resize_w as i64],
         values,
     })
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FbaInputEvidence {
+    pub image: TensorInput,
+    pub trimap: TensorInput,
+    pub image_normalized: TensorInput,
+    pub trimap_transformed: TensorInput,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Conservative adapter-only preprocessing peak.  This is intentionally
+/// independent of ORT model parameters/activations: callers can reject an
+/// oversized input before source/configured resize allocations begin.
+pub fn fba_preprocessing_peak_estimate(
+    source_width: u32,
+    source_height: u32,
+    input_width: u32,
+    input_height: u32,
+) -> Result<usize> {
+    ensure!(
+        source_width > 0 && source_height > 0 && input_width > 0 && input_height > 0,
+        "FBA memory estimate dimensions must be positive"
+    );
+    let source_pixels = (source_width as usize)
+        .checked_mul(source_height as usize)
+        .ok_or_else(|| anyhow::anyhow!("FBA source dimensions overflow"))?;
+    let configured_pixels = (input_width as usize)
+        .checked_mul(input_height as usize)
+        .ok_or_else(|| anyhow::anyhow!("FBA configured dimensions overflow"))?;
+    let padded_width = (input_width as usize).div_ceil(8) * 8;
+    let padded_height = (input_height as usize).div_ceil(8) * 8;
+    let padded_pixels = padded_width
+        .checked_mul(padded_height)
+        .ok_or_else(|| anyhow::anyhow!("FBA padded dimensions overflow"))?;
+    let components = [
+        source_pixels.checked_mul(4),     // source RGB + L mask
+        configured_pixels.checked_mul(4), // Pillow-resized RGB + L mask
+        configured_pixels
+            .checked_mul(5)
+            .and_then(|v| v.checked_mul(4)), // HWC f32
+        (input_height as usize)
+            .checked_mul(padded_width)
+            .and_then(|v| v.checked_mul(5))
+            .and_then(|v| v.checked_mul(8)), // float Lanczos temporary
+        padded_pixels.checked_mul(5).and_then(|v| v.checked_mul(4)), // padded HWC
+        padded_pixels.checked_mul(14).and_then(|v| v.checked_mul(4)), // planes/tensors
+        padded_pixels.checked_mul(2).and_then(|v| v.checked_mul(8)), // EDT f64 work
+        padded_pixels.checked_mul(2).and_then(|v| v.checked_mul(4)), // EDT f32 outputs
+    ];
+    let mut bytes = 0usize;
+    for value in components {
+        bytes = bytes
+            .checked_add(value.ok_or_else(|| anyhow::anyhow!("FBA memory estimate overflow"))?)
+            .ok_or_else(|| anyhow::anyhow!("FBA memory estimate overflow"))?;
+    }
+    Ok(bytes)
+}
+
+pub fn fba_restoration_peak_estimate(
+    working_width: u32,
+    working_height: u32,
+    canonical_width: u32,
+    canonical_height: u32,
+    channels: usize,
+) -> Result<usize> {
+    ensure!(
+        working_width > 0
+            && working_height > 0
+            && canonical_width > 0
+            && canonical_height > 0
+            && channels > 0,
+        "FBA restoration estimate dimensions must be positive"
+    );
+    let working_pixels = (working_width as usize)
+        .checked_mul(working_height as usize)
+        .ok_or_else(|| anyhow::anyhow!("FBA working dimensions overflow"))?;
+    let canonical_pixels = (canonical_width as usize)
+        .checked_mul(canonical_height as usize)
+        .ok_or_else(|| anyhow::anyhow!("FBA canonical dimensions overflow"))?;
+    let horizontal = (canonical_width as usize)
+        .checked_mul(working_height as usize)
+        .and_then(|v| v.checked_mul(channels))
+        .and_then(|v| v.checked_mul(std::mem::size_of::<f64>()))
+        .ok_or_else(|| anyhow::anyhow!("FBA restoration estimate overflow"))?;
+    let f32_working = working_pixels
+        .checked_mul(channels)
+        .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| anyhow::anyhow!("FBA restoration estimate overflow"))?;
+    let f32_canonical = canonical_pixels
+        .checked_mul(channels)
+        .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| anyhow::anyhow!("FBA restoration estimate overflow"))?;
+    f32_working
+        .checked_add(f32_working)
+        .and_then(|v| v.checked_add(horizontal))
+        .and_then(|v| v.checked_add(f32_canonical))
+        .and_then(|v| v.checked_add(f32_canonical))
+        .ok_or_else(|| anyhow::anyhow!("FBA restoration estimate overflow"))
+}
+
+fn fba_distance_transform(channel: &[f32], width: usize, height: usize) -> Result<Vec<f32>> {
+    ensure!(
+        width > 0 && height > 0,
+        "FBA EDT dimensions must be positive"
+    );
+    let pixels = width
+        .checked_mul(height)
+        .ok_or_else(|| anyhow::anyhow!("FBA EDT dimensions overflow"))?;
+    ensure!(channel.len() == pixels, "FBA EDT length mismatch");
+    ensure!(channel.iter().all(|v| v.is_finite()), "FBA EDT NaN/Inf");
+    // Felzenszwalb-Huttenlocher's exact separable squared Euclidean transform
+    // has the same distance definition as cv2.distanceTransform(..., DIST_L2, 0),
+    // while avoiding the O(pixels*known-pixels) implementation that cannot
+    // scale to 2048².
+    fn one_dimensional(values: &[f64]) -> Vec<f64> {
+        let n = values.len();
+        let mut v = vec![0usize; n];
+        let mut z = vec![f64::NEG_INFINITY; n + 1];
+        z[1] = f64::INFINITY;
+        let mut k = 0usize;
+        for q in 1..n {
+            let mut s;
+            loop {
+                let vk = v[k];
+                s = ((values[q] + (q * q) as f64) - (values[vk] + (vk * vk) as f64))
+                    / (2.0 * (q - vk) as f64);
+                if s > z[k] {
+                    break;
+                }
+                if k == 0 {
+                    break;
+                }
+                k -= 1;
+            }
+            k += 1;
+            v[k] = q;
+            z[k] = s;
+            z[k + 1] = f64::INFINITY;
+        }
+        let mut output = vec![0.0; n];
+        k = 0;
+        for (q, output_value) in output.iter_mut().enumerate() {
+            while z[k + 1] < q as f64 {
+                k += 1;
+            }
+            let d = q as f64 - v[k] as f64;
+            *output_value = d * d + values[v[k]];
+        }
+        output
+    }
+    let mut horizontal = vec![0.0; pixels];
+    let infinity = 1.0e20;
+    for y in 0..height {
+        let row = (0..width)
+            .map(|x| {
+                // CarveKit computes cv2.distanceTransform((1-plane)*255,
+                // DIST_L2, 0).  Match the source's uint8 cast and seed the
+                // exact zero pixels of that converted inverse plane rather
+                // than thresholding the interpolated float plane.
+                // NumPy's unsafe float->uint8 cast used by the pinned source
+                // truncates toward zero and wraps modulo 256 (rather than
+                // saturating).  Lanczos overshoot makes this observable at
+                // the fixture border, so reproduce it explicitly.
+                let inverse_value = ((1.0 - channel[y * width + x]) * 255.0) as i64;
+                let inverse = inverse_value.rem_euclid(256) as u8;
+                if inverse == 0 {
+                    0.0
+                } else {
+                    infinity
+                }
+            })
+            .collect::<Vec<_>>();
+        horizontal[y * width..(y + 1) * width].copy_from_slice(&one_dimensional(&row));
+    }
+    let mut output = vec![0.0f32; width * height];
+    for x in 0..width {
+        let column = (0..height)
+            .map(|y| horizontal[y * width + x])
+            .collect::<Vec<_>>();
+        for (y, value) in one_dimensional(&column).into_iter().enumerate() {
+            output[y * width + x] = value.sqrt() as f32;
+        }
+    }
+    Ok(output)
+}
+
+/// Reproduces the pinned CarveKit FBA wrapper's four input tensors. Configured
+/// resizing is Pillow BICUBIC on uint8 images; only the float HWC tensors are
+/// then rounded to an 8-pixel multiple with OpenCV INTER_LANCZOS4.
+pub fn fba_preprocess(
+    image: &bgremove_core::CanonicalImage,
+    trimap: &[u8],
+    input_width: u32,
+    input_height: u32,
+) -> Result<FbaInputEvidence> {
+    ensure!(
+        input_width > 0 && input_height > 0,
+        "FBA input dimensions must be positive"
+    );
+    let (source_width, source_height) = image.dimensions();
+    let source_pixels = (source_width as usize)
+        .checked_mul(source_height as usize)
+        .ok_or_else(|| anyhow::anyhow!("FBA source dimensions overflow"))?;
+    ensure!(trimap.len() == source_pixels, "FBA trimap length mismatch");
+    ensure!(
+        trimap.iter().all(|v| matches!(*v, 0 | 127 | 255)),
+        "FBA trimap contains invalid class"
+    );
+    ensure!(
+        input_width <= 4096 && input_height <= 4096,
+        "FBA dimensions exceed cap"
+    );
+    ensure!(
+        source_pixels <= 16 * 1024 * 1024,
+        "FBA source exceeds pixel cap"
+    );
+    let preprocessing_peak =
+        fba_preprocessing_peak_estimate(source_width, source_height, input_width, input_height)?;
+    ensure!(
+        preprocessing_peak <= 512 * 1024 * 1024,
+        "FBA preprocessing memory estimate exceeds cap before allocation"
+    );
+    let mut rgb = image
+        .rgb()
+        .data()
+        .iter()
+        .flat_map(|pixel| {
+            pixel
+                .iter()
+                .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8)
+        })
+        .collect::<Vec<_>>();
+    let mut mask = trimap.to_vec();
+    if source_width != input_width || source_height != input_height {
+        rgb = resize_u8_pillow_bicubic(
+            &rgb,
+            source_width,
+            source_height,
+            3,
+            input_width,
+            input_height,
+        )?;
+        mask = resize_u8_pillow_bicubic(
+            &mask,
+            source_width,
+            source_height,
+            1,
+            input_width,
+            input_height,
+        )?;
+    }
+    let width = input_width as usize;
+    let height = input_height as usize;
+    let mut image_hwc = vec![0.0f32; width * height * 3];
+    for index in 0..width * height {
+        for channel in 0..3 {
+            image_hwc[index * 3 + channel] = f32::from(rgb[index * 3 + (2 - channel)]) / 255.0;
+        }
+    }
+    let mut trimap_hwc = vec![0.0f32; width * height * 2];
+    for index in 0..width * height {
+        trimap_hwc[index * 2] = if mask[index] == 0 { 1.0 } else { 0.0 };
+        // CarveKit receives an 8-bit L image and tests the one-hot foreground
+        // class against the literal value 255 (not the normalized value 1).
+        // Keeping this comparison before normalization is important: a thin
+        // foreground band can otherwise silently disappear from both the
+        // transformed trimap and the model constraints.
+        trimap_hwc[index * 2 + 1] = if mask[index] == 255 { 1.0 } else { 0.0 };
+    }
+    let padded_width = width.div_ceil(8) * 8;
+    let padded_height = height.div_ceil(8) * 8;
+    if padded_width != width || padded_height != height {
+        image_hwc = resize_f32_opencv_lanczos4(
+            &image_hwc,
+            input_width,
+            input_height,
+            3,
+            padded_width as u32,
+            padded_height as u32,
+        )?;
+        trimap_hwc = resize_f32_opencv_lanczos4(
+            &trimap_hwc,
+            input_width,
+            input_height,
+            2,
+            padded_width as u32,
+            padded_height as u32,
+        )?;
+    }
+    let width = padded_width;
+    let height = padded_height;
+    let pixels = width
+        .checked_mul(height)
+        .context("FBA dimensions overflow")?;
+    ensure!(
+        pixels <= 16 * 1024 * 1024,
+        "FBA working tensor exceeds pixel cap"
+    );
+    let mut image_values = vec![0.0; pixels * 3];
+    for index in 0..pixels {
+        for channel in 0..3 {
+            image_values[channel * pixels + index] = image_hwc[index * 3 + channel];
+        }
+    }
+    let mut trimap_values = vec![0.0; pixels * 2];
+    for index in 0..pixels {
+        trimap_values[index] = trimap_hwc[index * 2];
+        trimap_values[pixels + index] = trimap_hwc[index * 2 + 1];
+    }
+    let mut normalized = image_values.clone();
+    let mean = [0.485, 0.456, 0.406];
+    let std = [0.229, 0.224, 0.225];
+    for channel in 0..3 {
+        for index in 0..pixels {
+            normalized[channel * pixels + index] =
+                (normalized[channel * pixels + index] - mean[channel]) / std[channel];
+        }
+    }
+    let mut transformed = vec![0.0; pixels * 6];
+    for channel in 0..2 {
+        let plane = &trimap_values[channel * pixels..(channel + 1) * pixels];
+        let distances = fba_distance_transform(plane, width, height)?;
+        for index in 0..pixels {
+            for (band, scale) in [0.02_f32, 0.08, 0.16].into_iter().enumerate() {
+                let sigma = scale * 320.0;
+                transformed[(channel * 3 + band) * pixels + index] =
+                    (-(distances[index] * distances[index]) / (2.0 * sigma * sigma)).exp();
+            }
+        }
+    }
+    ensure!(
+        image_values
+            .iter()
+            .chain(&trimap_values)
+            .chain(&normalized)
+            .chain(&transformed)
+            .all(|value| value.is_finite()),
+        "FBA preprocessing produced NaN/Inf"
+    );
+    Ok(FbaInputEvidence {
+        image: TensorInput {
+            shape: vec![1, 3, height as i64, width as i64],
+            values: image_values,
+        },
+        trimap: TensorInput {
+            shape: vec![1, 2, height as i64, width as i64],
+            values: trimap_values,
+        },
+        image_normalized: TensorInput {
+            shape: vec![1, 3, height as i64, width as i64],
+            values: normalized,
+        },
+        trimap_transformed: TensorInput {
+            shape: vec![1, 6, height as i64, width as i64],
+            values: transformed,
+        },
+        width: width as u32,
+        height: height as u32,
+    })
+}
+
+/// Apply the pinned decoder-side sigmoid/clamp and `fba_fusion` equations to
+/// decoder logits. Production ONNX output is already final fused output and
+/// must not pass through this helper a second time; this primitive exists for
+/// independent source parity evidence.
+pub fn fba_fusion(raw: &TensorOutput, image: &TensorInput) -> Result<TensorOutput> {
+    ensure!(
+        image.shape.len() == 4 && image.shape[0] == 1 && image.shape[1] == 3,
+        "FBA image shape must be [1,3,H,W]"
+    );
+    ensure!(
+        raw.shape.len() == 4
+            && raw.shape[0] == 1
+            && raw.shape[1] == 7
+            && raw.shape[2] == image.shape[2]
+            && raw.shape[3] == image.shape[3],
+        "FBA output shape must be [1,7,H,W]"
+    );
+    let h = usize::try_from(image.shape[2]).map_err(|_| anyhow::anyhow!("FBA height overflow"))?;
+    let w = usize::try_from(image.shape[3]).map_err(|_| anyhow::anyhow!("FBA width overflow"))?;
+    ensure!(h > 0 && w > 0, "FBA dimensions must be positive");
+    let pixels = h
+        .checked_mul(w)
+        .ok_or_else(|| anyhow::anyhow!("FBA dimensions overflow"))?;
+    ensure!(pixels <= 16 * 1024 * 1024, "FBA fusion exceeds pixel cap");
+    ensure!(
+        raw.values.len() == pixels * 7 && image.values.len() == pixels * 3,
+        "FBA tensor lengths mismatch"
+    );
+    ensure!(
+        raw.values
+            .iter()
+            .chain(&image.values)
+            .all(|v| v.is_finite()),
+        "FBA fusion NaN/Inf"
+    );
+    let mut alpha = vec![0.0; pixels];
+    let mut foreground = vec![0.0; pixels * 3];
+    let mut background = vec![0.0; pixels * 3];
+    for (index, alpha_value) in alpha.iter_mut().enumerate() {
+        let a = raw.values[index].clamp(0.0, 1.0);
+        *alpha_value = a;
+        for channel in 0..3 {
+            foreground[channel * pixels + index] =
+                1.0 / (1.0 + (-raw.values[(1 + channel) * pixels + index]).exp());
+            background[channel * pixels + index] =
+                1.0 / (1.0 + (-raw.values[(4 + channel) * pixels + index]).exp());
+        }
+    }
+    for (index, alpha_value) in alpha.iter_mut().enumerate() {
+        let a = *alpha_value;
+        for channel in 0..3 {
+            let img = image.values[channel * pixels + index];
+            let fi = channel * pixels + index;
+            foreground[fi] = (a * img + (1.0 - a * a) * foreground[fi]
+                - a * (1.0 - a) * background[fi])
+                .clamp(0.0, 1.0);
+            background[fi] = ((1.0 - a) * img + (2.0 * a - a * a) * background[fi]
+                - a * (1.0 - a) * foreground[fi])
+                .clamp(0.0, 1.0);
+        }
+        let mut numerator = 0.1 * a;
+        let mut denominator = 0.1;
+        for channel in 0..3 {
+            let fi = channel * pixels + index;
+            let delta = foreground[fi] - background[fi];
+            numerator += (image.values[fi] - background[fi]) * delta;
+            denominator += delta * delta;
+        }
+        *alpha_value = (numerator / denominator).clamp(0.0, 1.0);
+    }
+    Ok(TensorOutput {
+        shape: raw.shape.clone(),
+        values: alpha
+            .into_iter()
+            .chain(foreground)
+            .chain(background)
+            .collect(),
+    })
+}
+
+pub fn fba_restore_planes(
+    raw: &[f32],
+    channels: usize,
+    working_width: u32,
+    working_height: u32,
+    canonical_width: u32,
+    canonical_height: u32,
+) -> Result<Vec<f32>> {
+    ensure!(
+        channels > 0 && channels <= 7,
+        "FBA channel count is invalid"
+    );
+    let working_pixels = (working_width as usize)
+        .checked_mul(working_height as usize)
+        .ok_or_else(|| anyhow::anyhow!("FBA working dimensions overflow"))?;
+    ensure!(
+        raw.len() == working_pixels * channels,
+        "FBA restore length mismatch"
+    );
+    ensure!(raw.iter().all(|v| v.is_finite()), "FBA restore NaN/Inf");
+    ensure!(
+        fba_restoration_peak_estimate(
+            working_width,
+            working_height,
+            canonical_width,
+            canonical_height,
+            channels,
+        )? <= 512 * 1024 * 1024,
+        "FBA restoration memory estimate exceeds cap before allocation"
+    );
+    let mut interleaved = vec![0.0f32; raw.len()];
+    for i in 0..working_pixels {
+        for c in 0..channels {
+            interleaved[i * channels + c] = raw[c * working_pixels + i];
+        }
+    }
+    let resized = if working_width == canonical_width && working_height == canonical_height {
+        interleaved
+    } else {
+        resize_f32_opencv_lanczos4(
+            &interleaved,
+            working_width,
+            working_height,
+            channels,
+            canonical_width,
+            canonical_height,
+        )?
+    };
+    let canonical_pixels = (canonical_width as usize)
+        .checked_mul(canonical_height as usize)
+        .ok_or_else(|| anyhow::anyhow!("FBA canonical dimensions overflow"))?;
+    let mut output = vec![0.0; canonical_pixels * channels];
+    for i in 0..canonical_pixels {
+        for c in 0..channels {
+            output[c * canonical_pixels + i] = resized[i * channels + c];
+        }
+    }
+    Ok(output)
+}
+
+fn fba_alpha_only_from_restored(restored_alpha: &[f32], trimap: &[u8]) -> Result<Vec<f32>> {
+    ensure!(
+        restored_alpha.len() == trimap.len(),
+        "FBA alpha/trimap length mismatch"
+    );
+    ensure!(
+        trimap.iter().all(|v| matches!(*v, 0 | 127 | 255)),
+        "FBA trimap contains invalid class"
+    );
+    Ok(restored_alpha
+        .iter()
+        .zip(trimap)
+        .map(|(value, mask)| {
+            if *mask == 0 || *value < 0.3 {
+                0.0
+            } else {
+                ((*value * 255.0).clamp(0.0, 255.0) as u8) as f32 / 255.0
+            }
+        })
+        .collect())
+}
+
+/// CarveKit's alpha-only path restores the complete interleaved seven-channel
+/// output before selecting alpha.  Keeping that operation distinct from the
+/// one-plane helper preserves OpenCV's multi-channel interpolation contract.
+pub fn fba_alpha_only_postprocess_final(
+    final_output: &[f32],
+    working_width: u32,
+    working_height: u32,
+    trimap: &[u8],
+    canonical_width: u32,
+    canonical_height: u32,
+) -> Result<Vec<f32>> {
+    ensure!(
+        working_width > 0 && working_height > 0 && canonical_width > 0 && canonical_height > 0,
+        "FBA alpha-only dimensions must be positive"
+    );
+    let working_pixels = (working_width as usize)
+        .checked_mul(working_height as usize)
+        .ok_or_else(|| anyhow::anyhow!("FBA working dimensions overflow"))?;
+    let expected = working_pixels
+        .checked_mul(7)
+        .ok_or_else(|| anyhow::anyhow!("FBA final output dimensions overflow"))?;
+    ensure!(
+        final_output.len() == expected,
+        "FBA final output length mismatch"
+    );
+    ensure!(
+        final_output.iter().all(|value| value.is_finite()),
+        "FBA final output contains NaN/Inf"
+    );
+    ensure!(
+        fba_restoration_peak_estimate(
+            working_width,
+            working_height,
+            canonical_width,
+            canonical_height,
+            7,
+        )? <= 512 * 1024 * 1024,
+        "FBA alpha-only memory estimate exceeds cap before allocation"
+    );
+    let interleaved = (0..working_pixels)
+        .flat_map(|index| (0..7).map(move |channel| final_output[channel * working_pixels + index]))
+        .collect::<Vec<_>>();
+    // The pinned wrapper passes INTER_LANCZOS4 as the legacy third positional
+    // argument.  OpenCV's Python binding interprets that position as `dst`
+    // and consequently applies its documented default linear interpolation;
+    // preserve that observed source behaviour for the alpha-only candidate.
+    let restored_interleaved = resize_f32_opencv_linear(
+        &interleaved,
+        working_width,
+        working_height,
+        7,
+        canonical_width,
+        canonical_height,
+    )?;
+    let canonical_pixels = (canonical_width as usize)
+        .checked_mul(canonical_height as usize)
+        .ok_or_else(|| anyhow::anyhow!("FBA canonical dimensions overflow"))?;
+    let alpha = (0..canonical_pixels)
+        .map(|index| restored_interleaved[index * 7])
+        .collect::<Vec<_>>();
+    fba_alpha_only_from_restored(&alpha, trimap)
+}
+
+/// Split and restore the final fused graph contract.  The graph emits alpha,
+/// foreground BGR, and background BGR planes; this helper is deliberately
+/// independent of ORT so channel order, Lanczos restoration, clamping, and
+/// known-trimap constraints have a direct unit-testable contract.
+pub fn fba_split_final_output(
+    final_output: &[f32],
+    working_width: u32,
+    working_height: u32,
+    trimap: &[u8],
+    canonical_width: u32,
+    canonical_height: u32,
+) -> Result<(
+    Vec<f32>,
+    bgremove_core::AlphaMask,
+    bgremove_core::RgbImageF32,
+    bgremove_core::RgbImageF32,
+)> {
+    ensure!(
+        working_width > 0 && working_height > 0 && canonical_width > 0 && canonical_height > 0,
+        "FBA output dimensions must be positive"
+    );
+    let working_pixels = (working_width as usize)
+        .checked_mul(working_height as usize)
+        .ok_or_else(|| anyhow::anyhow!("FBA working dimensions overflow"))?;
+    let canonical_pixels = (canonical_width as usize)
+        .checked_mul(canonical_height as usize)
+        .ok_or_else(|| anyhow::anyhow!("FBA canonical dimensions overflow"))?;
+    let expected = working_pixels
+        .checked_mul(7)
+        .ok_or_else(|| anyhow::anyhow!("FBA final output dimensions overflow"))?;
+    ensure!(
+        final_output.len() == expected,
+        "FBA final output must contain seven working planes"
+    );
+    ensure!(
+        final_output.iter().all(|value| value.is_finite()),
+        "FBA final output contains NaN/Inf"
+    );
+    ensure!(
+        trimap.len() == canonical_pixels,
+        "FBA trimap dimensions mismatch"
+    );
+    ensure!(
+        trimap.iter().all(|v| matches!(*v, 0 | 127 | 255)),
+        "FBA trimap contains invalid class"
+    );
+    let restored = fba_restore_planes(
+        final_output,
+        7,
+        working_width,
+        working_height,
+        canonical_width,
+        canonical_height,
+    )?
+    .into_iter()
+    .map(|v| v.clamp(0.0, 1.0))
+    .collect::<Vec<_>>();
+    let mut alpha_values = restored[..canonical_pixels].to_vec();
+    for (value, class) in alpha_values.iter_mut().zip(trimap) {
+        if *class == 0 {
+            *value = 0.0;
+        } else if *class == 255 {
+            *value = 1.0;
+        }
+    }
+    let alpha = bgremove_core::AlphaMask::new(canonical_width, canonical_height, alpha_values)?;
+    let foreground = bgremove_core::RgbImageF32::new(
+        canonical_width,
+        canonical_height,
+        (0..canonical_pixels)
+            .map(|index| {
+                [
+                    restored[3 * canonical_pixels + index],
+                    restored[2 * canonical_pixels + index],
+                    restored[canonical_pixels + index],
+                ]
+            })
+            .collect(),
+    )?;
+    let background = bgremove_core::RgbImageF32::new(
+        canonical_width,
+        canonical_height,
+        (0..canonical_pixels)
+            .map(|index| {
+                [
+                    restored[6 * canonical_pixels + index],
+                    restored[5 * canonical_pixels + index],
+                    restored[4 * canonical_pixels + index],
+                ]
+            })
+            .collect(),
+    )?;
+    let alpha_only = fba_alpha_only_postprocess_final(
+        final_output,
+        working_width,
+        working_height,
+        trimap,
+        canonical_width,
+        canonical_height,
+    )?;
+    Ok((alpha_only, alpha, foreground, background))
+}
+
+pub struct FbaRunEvidence {
+    pub inputs: FbaInputEvidence,
+    /// The ONNX graph's final fused seven-channel output. It is not decoder
+    /// logits and must never be passed through `fba_fusion` again.
+    pub final_output: TensorOutput,
+    pub alpha_only: Vec<f32>,
+    pub full_alpha: bgremove_core::AlphaMask,
+    pub foreground: bgremove_core::RgbImageF32,
+    pub background: bgremove_core::RgbImageF32,
+    pub provider: ProviderReport,
+}
+
+pub struct FbaSegmenter {
+    pool: SessionPool,
+    width: u32,
+    height: u32,
+}
+
+/// Which typed candidate an FBA adapter exposes to the pipeline.  CarveKit's
+/// historical alpha-only postprocess and the seven-channel full-FBA result
+/// are intentionally separate contracts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FbaCandidateMode {
+    AlphaOnly,
+    FullFba,
+}
+
+pub fn fba_select_candidate(
+    mode: FbaCandidateMode,
+    alpha_only: &[f32],
+    full_alpha: &bgremove_core::AlphaMask,
+    foreground: &bgremove_core::RgbImageF32,
+    background: &bgremove_core::RgbImageF32,
+) -> Result<bgremove_core::RefinedMatte> {
+    match mode {
+        FbaCandidateMode::AlphaOnly => bgremove_core::RefinedMatte::new(
+            bgremove_core::AlphaMask::new(
+                full_alpha.width(),
+                full_alpha.height(),
+                alpha_only.to_vec(),
+            )?,
+            None,
+            None,
+        ),
+        FbaCandidateMode::FullFba => bgremove_core::RefinedMatte::new(
+            full_alpha.clone(),
+            Some(foreground.clone()),
+            Some(background.clone()),
+        ),
+    }
+}
+
+pub struct FbaRefiner {
+    segmenter: FbaSegmenter,
+    mode: FbaCandidateMode,
+}
+
+impl FbaRefiner {
+    pub fn new(segmenter: FbaSegmenter, mode: FbaCandidateMode) -> Self {
+        Self { segmenter, mode }
+    }
+
+    pub fn mode(&self) -> FbaCandidateMode {
+        self.mode
+    }
+}
+
+impl bgremove_core::AlphaRefiner for FbaRefiner {
+    fn refine(
+        &mut self,
+        image: &bgremove_core::CanonicalImage,
+        coarse: &bgremove_core::AlphaMask,
+        trimap: &bgremove_core::Trimap,
+    ) -> Result<bgremove_core::RefinedMatte> {
+        ensure!(
+            image.dimensions() == coarse.dimensions() && image.dimensions() == trimap.dimensions(),
+            "FBA refiner image, coarse alpha, and trimap dimensions must match"
+        );
+        ensure!(
+            coarse.data().iter().all(|v| v.is_finite()),
+            "FBA coarse alpha contains NaN/Inf"
+        );
+        let raw_trimap = trimap
+            .data()
+            .iter()
+            .map(|class| match class {
+                bgremove_core::TrimapClass::Background => 0,
+                bgremove_core::TrimapClass::Unknown => 127,
+                bgremove_core::TrimapClass::Foreground => 255,
+            })
+            .collect::<Vec<_>>();
+        let evidence = self.segmenter.predict_with_evidence(image, &raw_trimap)?;
+        fba_select_candidate(
+            self.mode,
+            &evidence.alpha_only,
+            &evidence.full_alpha,
+            &evidence.foreground,
+            &evidence.background,
+        )
+    }
+}
+
+impl FbaSegmenter {
+    pub fn new(
+        manifest: &ModelManifest,
+        manifest_path: &Path,
+        runtime: &Path,
+        workers: usize,
+        requested: RequestedProvider,
+        fallback_allowed: bool,
+    ) -> Result<Self> {
+        ensure!(
+            manifest.algorithm_family == "fba",
+            "FBA adapter requires algorithm_family=fba"
+        );
+        ensure!(
+            manifest.preprocessing_profile == bgremove_models::PreprocessingProfile::CarveKitFba
+                && manifest.preprocessing_contract == "pillow-bicubic-then-opencv-lanczos4-pad8",
+            "FBA manifest must declare the CarveKit two-stage preprocessing contract"
+        );
+        ensure!(
+            manifest.intended_use_approved,
+            "model {} is not approved for intended use",
+            manifest.id
+        );
+        ensure!(
+            manifest.layout == bgremove_models::ModelLayout::Nchw
+                && manifest.channel_order == bgremove_models::ChannelOrder::Bgr,
+            "FBA requires BGR NCHW input"
+        );
+        ensure!(
+            manifest.input_name == "image" && manifest.output_name == "output",
+            "FBA synthetic contract names are image/output"
+        );
+        ensure!(
+            manifest.auxiliary_input_names
+                == vec!["trimap", "image_normalized", "trimap_transformed"],
+            "FBA requires the three declared auxiliary input names"
+        );
+        ensure!(
+            manifest.input_shape.len() == 4,
+            "FBA image input shape must be rank four"
+        );
+        ensure!(
+            manifest.auxiliary_input_shapes.len() == 3
+                && manifest.auxiliary_input_shapes[0].len() == 4
+                && manifest.auxiliary_input_shapes[1].len() == 4
+                && manifest.auxiliary_input_shapes[2].len() == 4,
+            "FBA auxiliary input shapes must be rank four"
+        );
+        ensure!(
+            manifest.width > 0 && manifest.height > 0,
+            "FBA dimensions must be positive"
+        );
+        // The manifest dimensions are the configured CarveKit resize.  The
+        // graph sees the subsequent OpenCV Lanczos padding to an 8-pixel
+        // multiple; keep that distinction explicit so the synthetic 11x7
+        // profile and static 1024/2048 profiles share one contract.
+        let graph_width = manifest.width.div_ceil(8) * 8;
+        let graph_height = manifest.height.div_ceil(8) * 8;
+        let static_shape = |channels: u64| {
+            vec![
+                DimensionSpec::Static(1),
+                DimensionSpec::Static(channels),
+                DimensionSpec::Static(graph_height as u64),
+                DimensionSpec::Static(graph_width as u64),
+            ]
+        };
+        ensure!(
+            manifest.input_shape == static_shape(3)
+                && manifest.auxiliary_input_shapes
+                    == vec![static_shape(2), static_shape(3), static_shape(6)],
+            "FBA requires exact static [1,C,H,W] input shapes"
+        );
+        ensure!(
+            manifest.output_shape.len() == 4 && manifest.output_shape == static_shape(7),
+            "FBA requires exact static [1,7,H,W] output shape"
+        );
+        ensure!(
+            manifest.input_type == Some(TensorElementType::F32)
+                && manifest.output_type == Some(TensorElementType::F32),
+            "FBA tensors must be f32"
+        );
+        ensure!(
+            manifest.activation == Activation::None
+                && manifest.output_normalization == OutputNormalization::None,
+            "FBA output must remain direct"
+        );
+        let pool = SessionPool::new(
+            manifest,
+            manifest_path,
+            runtime,
+            workers,
+            requested,
+            fallback_allowed,
+        )?;
+        {
+            let (lock, _) = &*pool.state;
+            let state = lock.lock().unwrap();
+            ensure!(
+                state
+                    .available
+                    .iter()
+                    .all(|session| session.inspection.output_names.len() == 1
+                        && session.inspection.output_names[0] == manifest.output_name),
+                "FBA graph must expose exactly one output named output"
+            );
+        }
+        Ok(Self {
+            pool,
+            width: manifest.width,
+            height: manifest.height,
+        })
+    }
+
+    pub fn predict_with_evidence(
+        &self,
+        image: &bgremove_core::CanonicalImage,
+        trimap: &[u8],
+    ) -> Result<FbaRunEvidence> {
+        let inputs = fba_preprocess(image, trimap, self.width, self.height)?;
+        // Capture provenance before checking out the only worker; while the
+        // lease is held the pool has no available session to report.
+        let provider = self.pool.provider_report();
+        let mut lease = self.pool.checkout();
+        let final_output = lease.session_mut().run_four([
+            ("image", &inputs.image.shape, &inputs.image.values),
+            ("trimap", &inputs.trimap.shape, &inputs.trimap.values),
+            (
+                "image_normalized",
+                &inputs.image_normalized.shape,
+                &inputs.image_normalized.values,
+            ),
+            (
+                "trimap_transformed",
+                &inputs.trimap_transformed.shape,
+                &inputs.trimap_transformed.values,
+            ),
+        ])?;
+        ensure!(
+            final_output.shape == vec![1, 7, inputs.height as i64, inputs.width as i64],
+            "FBA graph must return final [1,7,H,W] output"
+        );
+        let working_pixels = (inputs.width as usize)
+            .checked_mul(inputs.height as usize)
+            .ok_or_else(|| anyhow::anyhow!("FBA working dimensions overflow"))?;
+        ensure!(
+            final_output.values.len() == working_pixels * 7,
+            "FBA final output length mismatch"
+        );
+        let canonical_width = image.width();
+        let canonical_height = image.height();
+        let (alpha_only, full_alpha, foreground, background) = fba_split_final_output(
+            &final_output.values,
+            inputs.width,
+            inputs.height,
+            trimap,
+            canonical_width,
+            canonical_height,
+        )?;
+        Ok(FbaRunEvidence {
+            inputs,
+            final_output,
+            alpha_only,
+            full_alpha,
+            foreground,
+            background,
+            provider,
+        })
+    }
+
+    pub fn provider(&self) -> ProviderReport {
+        self.pool.provider_report()
+    }
 }
 
 /// Restore an M6 direct soft mask to canonical dimensions. Quantisation is
@@ -5750,6 +7055,262 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("workers"));
+    }
+
+    #[test]
+    fn m11_external_fba_is_rejected_before_checkpoint_or_runtime_access() {
+        let path = Path::new("../../models/m11_fba_external.toml");
+        let manifest =
+            bgremove_models::parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let result = FbaSegmenter::new(
+            &manifest,
+            path,
+            Path::new("/missing/ort-runtime"),
+            1,
+            RequestedProvider::Cpu,
+            false,
+        );
+        let error = match result {
+            Ok(_) => panic!("unapproved FBA checkpoint must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("not approved for intended use"));
+    }
+
+    #[test]
+    fn m11_fba_preprocess_is_bgr_bounded_and_deterministic_for_resize_padding() {
+        let image = bgremove_core::CanonicalImage::new(
+            13,
+            9,
+            (0..117)
+                .map(|i| {
+                    let x = (i % 13) as f32 / 12.0;
+                    let y = (i / 13) as f32 / 8.0;
+                    [x, y, 1.0 - x]
+                })
+                .collect(),
+        )
+        .unwrap();
+        let mut trimap = vec![127u8; 117];
+        for y in 0..9 {
+            for x in 0..4 {
+                trimap[y * 13 + x] = 0;
+                trimap[y * 13 + (12 - x)] = 255;
+            }
+        }
+        let first = fba_preprocess(&image, &trimap, 11, 7).unwrap();
+        let second = fba_preprocess(&image, &trimap, 11, 7).unwrap();
+        assert_eq!((first.width, first.height), (16, 8));
+        assert_eq!(first, second);
+        assert!(first
+            .image
+            .values
+            .iter()
+            .chain(&first.image_normalized.values)
+            .chain(&first.trimap_transformed.values)
+            .all(|v| v.is_finite()));
+        assert!(
+            first.trimap.values[..first.width as usize * first.height as usize]
+                .iter()
+                .any(|v| *v > 0.0)
+        );
+        assert!(
+            first.trimap.values[first.width as usize * first.height as usize..]
+                .iter()
+                .any(|v| *v > 0.0)
+        );
+
+        // An unresized 8x8 constant makes the channel and normalization
+        // contract independently observable (the 13x9 fixture exercises the
+        // two resamplers above).  The source image is RGB, while FBA receives
+        // planar BGR and ImageNet normalization in BGR order.
+        let constant = bgremove_core::CanonicalImage::new(8, 8, vec![[0.1, 0.2, 0.3]; 64]).unwrap();
+        let constant_trimap = vec![127u8; 64];
+        let exact = fba_preprocess(&constant, &constant_trimap, 8, 8).unwrap();
+        let expected_bgr = [77.0 / 255.0, 51.0 / 255.0, 26.0 / 255.0];
+        assert!((exact.image.values[0] - expected_bgr[0]).abs() < 1.0e-6);
+        assert!((exact.image.values[64] - expected_bgr[1]).abs() < 1.0e-6);
+        assert!((exact.image.values[128] - expected_bgr[2]).abs() < 1.0e-6);
+        assert!(
+            (exact.image_normalized.values[0] - ((expected_bgr[0] - 0.485) / 0.229)).abs() < 1.0e-5
+        );
+        assert!(
+            (exact.image_normalized.values[64] - ((expected_bgr[1] - 0.456) / 0.224)).abs()
+                < 1.0e-5
+        );
+        assert!(
+            (exact.image_normalized.values[128] - ((expected_bgr[2] - 0.406) / 0.225)).abs()
+                < 1.0e-5
+        );
+
+        // Empty known classes are legal source input: the EDT must remain
+        // finite and deterministic rather than panicking or allocating a
+        // pixel-by-known-class distance matrix.
+        let empty_classes = fba_preprocess(&constant, &constant_trimap, 8, 8).unwrap();
+        assert!(empty_classes
+            .trimap_transformed
+            .values
+            .iter()
+            .all(|value| value.is_finite()));
+        assert!(fba_preprocessing_peak_estimate(u32::MAX, u32::MAX, 8, 8).is_err());
+    }
+
+    #[test]
+    fn m11_fba_final_split_reverses_bgr_and_enforces_constraints() {
+        let output = vec![0.5, 0.1, 0.2, 0.9, 0.4, 0.3, 0.8];
+        let (alpha_only, alpha, foreground, background) =
+            fba_split_final_output(&output, 1, 1, &[127], 1, 1).unwrap();
+        assert_eq!(alpha.data(), &[0.5]);
+        assert_eq!(alpha_only.len(), 1);
+        assert_eq!(foreground.data(), &[[0.9, 0.2, 0.1]]);
+        assert_eq!(background.data(), &[[0.8, 0.3, 0.4]]);
+    }
+
+    #[test]
+    fn m11_fba_refiner_implements_typed_alpha_refiner() {
+        fn assert_impl<T: bgremove_core::AlphaRefiner>() {}
+        assert_impl::<FbaRefiner>();
+    }
+
+    #[test]
+    fn m11_fba_known_composite_uses_restored_rgb_channel_order() {
+        let output = vec![0.25, 0.1, 0.2, 0.9, 0.8, 0.7, 0.6];
+        let (_, alpha, foreground, background) =
+            fba_split_final_output(&output, 1, 1, &[127], 1, 1).unwrap();
+        let a = alpha.data()[0];
+        let f = foreground.data()[0];
+        let b = background.data()[0];
+        let composite = [
+            a * f[0] + (1.0 - a) * b[0],
+            a * f[1] + (1.0 - a) * b[1],
+            a * f[2] + (1.0 - a) * b[2],
+        ];
+        assert_eq!(f, [0.9, 0.2, 0.1]);
+        assert_eq!(b, [0.6, 0.7, 0.8]);
+        for (actual, expected) in composite.into_iter().zip([0.675, 0.575, 0.625]) {
+            assert!((actual - expected).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn m11_fba_split_enforces_exact_known_background_and_foreground() {
+        let output = vec![
+            0.8, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8,
+        ];
+        let (_, alpha, _, _) = fba_split_final_output(&output, 2, 1, &[0, 255], 2, 1).unwrap();
+        assert_eq!(alpha.data(), &[0.0, 1.0]);
+        assert!(fba_split_final_output(&[f32::NAN; 14], 2, 1, &[0, 255], 2, 1).is_err());
+        assert!(fba_alpha_only_postprocess_final(&[0.0; 13], 2, 1, &[0, 255], 2, 1).is_err());
+    }
+
+    #[test]
+    fn m11_fba_candidate_modes_select_distinct_alpha_contracts() {
+        let full = bgremove_core::AlphaMask::new(1, 1, vec![1.0]).unwrap();
+        let foreground = bgremove_core::RgbImageF32::constant(1, 1, [0.1, 0.2, 0.3]).unwrap();
+        let background = bgremove_core::RgbImageF32::constant(1, 1, [0.7, 0.8, 0.9]).unwrap();
+        let alpha_only = fba_select_candidate(
+            FbaCandidateMode::AlphaOnly,
+            &[0.25],
+            &full,
+            &foreground,
+            &background,
+        )
+        .unwrap();
+        let full_fba = fba_select_candidate(
+            FbaCandidateMode::FullFba,
+            &[0.25],
+            &full,
+            &foreground,
+            &background,
+        )
+        .unwrap();
+        assert_eq!(alpha_only.alpha().data(), &[0.25]);
+        assert_eq!(alpha_only.foreground(), None);
+        assert_eq!(full_fba.alpha().data(), &[1.0]);
+        assert_eq!(full_fba.foreground().unwrap().data(), &[[0.1, 0.2, 0.3]]);
+    }
+
+    #[test]
+    fn m11_fba_fusion_rejects_malformed_dimensions_and_nonfinite_values() {
+        let image = TensorInput {
+            shape: vec![1, 3, 2, 2],
+            values: vec![0.5; 12],
+        };
+        for raw in [
+            TensorOutput {
+                shape: vec![],
+                values: vec![],
+            },
+            TensorOutput {
+                shape: vec![1, 7, -1, 2],
+                values: vec![],
+            },
+            TensorOutput {
+                shape: vec![1, 7, 2, 2],
+                values: vec![f32::NAN; 28],
+            },
+        ] {
+            assert!(fba_fusion(&raw, &image).is_err());
+        }
+    }
+
+    #[test]
+    fn m11_fba_alpha_restore_is_canonical_and_known_background_exact() {
+        let raw = vec![0.8f32; 8 * 16 * 7];
+        let mut trimap = vec![127u8; 13 * 9];
+        trimap[0] = 0;
+        let alpha = fba_alpha_only_postprocess_final(&raw, 16, 8, &trimap, 13, 9).unwrap();
+        assert_eq!(alpha.len(), 13 * 9);
+        assert_eq!(alpha[0], 0.0);
+        assert!(alpha
+            .iter()
+            .all(|v| v.is_finite() && (0.0..=1.0).contains(v)));
+    }
+
+    #[test]
+    #[ignore = "requires the externally provisioned ORT_DYLIB; synthetic M11 graph is checked in"]
+    fn real_m11_synthetic_fba_matches_all_runtime_stages() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let manifest_path = root.join("models/m11_fba_synthetic.toml");
+        let manifest =
+            bgremove_models::parse_toml(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let runtime_os = std::env::var_os("ORT_DYLIB").expect("ORT_DYLIB");
+        let segmenter = FbaSegmenter::new(
+            &manifest,
+            &manifest_path,
+            Path::new(&runtime_os),
+            1,
+            RequestedProvider::Cpu,
+            false,
+        )
+        .unwrap();
+        let fixture = root.join("tests/fixtures/m11/reference");
+        let decoded = std::fs::read(fixture.join("decoded-rgb.f32le")).unwrap();
+        let data = decoded
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        let image = bgremove_core::CanonicalImage::new(
+            13,
+            9,
+            data.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect(),
+        )
+        .unwrap();
+        let trimap = std::fs::read(fixture.join("input-trimap.u8")).unwrap();
+        let evidence = segmenter.predict_with_evidence(&image, &trimap).unwrap();
+        let raw = std::fs::read(fixture.join("raw-output.f32le")).unwrap();
+        let expected = raw
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(evidence.final_output.values.len(), expected.len());
+        assert!(evidence
+            .final_output
+            .values
+            .iter()
+            .zip(expected)
+            .all(|(a, b)| (*a - b).abs() <= 1e-6));
+        assert!(evidence.provider.active == "CPUExecutionProvider");
     }
 
     #[test]

@@ -1,0 +1,257 @@
+{
+  "artifacts": {
+    "alpha-only.u8": {
+      "bytes": 117,
+      "path": "alpha-only.u8",
+      "sha256": "ecb33f4758bd4ee34e2e359bc8106167460e303cda736b43b103d7b32bd21e6e"
+    },
+    "decoder-output.f32le": {
+      "bytes": 3584,
+      "path": "decoder-output.f32le",
+      "sha256": "c2df90fdd7f4fedd5742fbf47cd9f7648afad4352ff9d94fb6502bef3a7110e4"
+    },
+    "full-alpha.f32le": {
+      "bytes": 468,
+      "path": "full-alpha.f32le",
+      "sha256": "f7e6069e781719a1a63ad939b0411f60c2408b6d0babaa980ba637b32f180fdd"
+    },
+    "full-background-rgb.f32le": {
+      "bytes": 1404,
+      "path": "full-background-rgb.f32le",
+      "sha256": "09472c9f300308fd8ea516b6395b2dc180161688412d7a4b21718613dd47c55f"
+    },
+    "full-foreground-rgb.f32le": {
+      "bytes": 1404,
+      "path": "full-foreground-rgb.f32le",
+      "sha256": "af22212f01bbf4948f77b02b9f77f35ba29e28992b35fca41ed83cd3784ee55a"
+    },
+    "fused-output.f32le": {
+      "bytes": 3584,
+      "path": "fused-output.f32le",
+      "sha256": "c82d35ec0f864afc5a9acaa290aa34dd9d8791b5a3893ba7ae8f73a7c8af326c"
+    },
+    "image-input.f32le": {
+      "bytes": 1536,
+      "path": "image-input.f32le",
+      "sha256": "d9192bb71525d09440dc11d798474b9b39019f9fc6568f73e9585e204526ba77"
+    },
+    "image-normalized.f32le": {
+      "bytes": 1536,
+      "path": "image-normalized.f32le",
+      "sha256": "aa8c2a9afa26e7706fab9d79a2f9364050f1bb6724a5c4acfa2e594fce9bce3f"
+    },
+    "raw-output.f32le": {
+      "bytes": 3584,
+      "path": "raw-output.f32le",
+      "sha256": "265f972b055c1d96559d91238bb32aa6e396b9411494726864f1aabf85142e10"
+    },
+    "restored-bgr-planes.f32le": {
+      "bytes": 3276,
+      "path": "restored-bgr-planes.f32le",
+      "sha256": "af38c14e4310f004ad9902440db370a03560ec8548816a7a1cfc9be53ee1daf1"
+    },
+    "trimap-input.f32le": {
+      "bytes": 1024,
+      "path": "trimap-input.f32le",
+      "sha256": "7c5b3d9dd552bce4c3ed26427e16c54f5320e0aaf88a59d21962565388053bce"
+    },
+    "trimap-transformed.f32le": {
+      "bytes": 3072,
+      "path": "trimap-transformed.f32le",
+      "sha256": "c107bbc87ef5a0d9f95c08a26d076f1ac2e120c367f612fab67c0547aab744c0"
+    }
+  },
+  "authority_report_sha256": "c67165149921fa960807ffa64e64cf257b05a2954c8c92518b373e296f52d4fd",
+  "candidates": {
+    "alpha_only": {
+      "background_alpha_zero": true,
+      "known_foreground_positive_fraction": 1.0,
+      "status": "executed"
+    },
+    "full_fba": {
+      "alpha_channels": 1,
+      "background_channels": 3,
+      "foreground_channels": 3,
+      "known_background_exact_zero_fraction": 1.0,
+      "known_foreground_exact_one_fraction": 1.0,
+      "status": "executed"
+    }
+  },
+  "checkpoint_gate": {
+    "real_1024_executed": false,
+    "real_2048_executed": false,
+    "status": "excluded-license-unavailable",
+    "weights_downloaded": false
+  },
+  "comparison": {
+    "alpha_only_encoded_max_abs": 0.0,
+    "decoder_fusion_max_abs": 1.7881393432617188e-7,
+    "decoder_fusion_mean_abs": 1.6736780850123978e-8,
+    "graph_final_max_abs": 1.7881393432617188e-7,
+    "graph_final_mean_abs": 7.523340173065662e-9,
+    "preprocess_max_abs": 7.152557373046875e-7,
+    "preprocess_mean_abs": 5.643175882141804e-8,
+    "restored_max_abs": 2.980232238769531e-7,
+    "tolerances": {
+      "alpha_only_encoded_abs": 1.0,
+      "decoder_fusion_f32_abs": 3.000000106112566e-6,
+      "graph_final_f32_abs": 3.000000106112566e-6,
+      "preprocess_f32_abs": 9.999999974752427e-7,
+      "restored_f32_abs": 3.000000106112566e-6
+    }
+  },
+  "constraints": {
+    "alpha_only_known_foreground_positive_fraction": 1.0,
+    "full_background_exact_zero_fraction": 1.0,
+    "full_foreground_exact_one_fraction": 1.0
+  },
+  "contract": {
+    "alpha_only": "CarveKit data_postprocessing after pinned cv2.resize binding-default interpolation, background enforcement, threshold 0.3, and uint8 conversion",
+    "canonical_size": [
+      13,
+      9
+    ],
+    "channel_order": "BGR",
+    "configured_size": [
+      11,
+      7
+    ],
+    "fusion": "pinned carvekit fba_fusion embedded in graph",
+    "inputs": {
+      "image": [
+        1,
+        3,
+        8,
+        16
+      ],
+      "image_normalized": [
+        1,
+        3,
+        8,
+        16
+      ],
+      "trimap": [
+        1,
+        2,
+        8,
+        16
+      ],
+      "trimap_transformed": [
+        1,
+        6,
+        8,
+        16
+      ]
+    },
+    "output": [
+      1,
+      7,
+      8,
+      16
+    ],
+    "output_semantics": "final fused alpha, foreground BGR, background BGR",
+    "padded_size": [
+      16,
+      8
+    ],
+    "trimap_evidence": {
+      "one_hot_nonzero_counts": [
+        72,
+        72
+      ],
+      "transformed_max": 1.0,
+      "transformed_min": 0.3720341920852661,
+      "transformed_nonzero_counts": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ]
+    }
+  },
+  "input": {
+    "canonical_dimensions": [
+      13,
+      9
+    ],
+    "configured_dimensions": [
+      11,
+      7
+    ],
+    "trimap_sha256": "e072fb65cf41ee540f5f701fc8bac173baacd85ad1635ace9e1bf45e82da5e0b",
+    "working_dimensions": [
+      16,
+      8
+    ]
+  },
+  "metrics": {
+    "alpha_only": {
+      "background_zero_fraction": 1.0,
+      "coordinate_space": "canonical-alpha",
+      "foreground_known_positive_fraction": 1.0
+    },
+    "full_fba": {
+      "coordinate_space": "canonical-rgb",
+      "reconstructed_composite_max_abs": 0.3013177514076233,
+      "reconstructed_composite_mean_abs": 0.014918461441993713,
+      "visible_alpha_weighted_foreground_mean_abs": 0.012451634742319584
+    }
+  },
+  "model": {
+    "bytes": 6860,
+    "license_path": "models/M11_FBA_SYNTHETIC_LICENSE.txt",
+    "license_sha256": "4fafbebf6846c1c8cd5fe7ab4fbcc79e5e853f2b9fa23f8b8c7ca111d5b0c4d0",
+    "path": "models/fixtures/m11_fba_synthetic.onnx",
+    "sha256": "57183a7d2adbd274aea3a69bce1d997ece2c1ae36a51ac8fc7566d102be4a20c"
+  },
+  "model_sha256": "57183a7d2adbd274aea3a69bce1d997ece2c1ae36a51ac8fc7566d102be4a20c",
+  "parity_sha256": "7d7e3025bd9c23d509079a22d970af423459193b1408cf1b541084970d167e37",
+  "real_checkpoint_executed": false,
+  "resource_limits": {
+    "adapter_peak_estimated_bytes": 19596,
+    "adapter_peak_semantics": "checked source/configured/padded f32/f64 resize, EDT, transformed tensors, and seven-plane restoration; excludes external model parameters/activations",
+    "adapter_preprocessing_estimated_peak_bytes": 19596,
+    "adapter_restoration_estimated_peak_bytes": 19544,
+    "edt": "Felzenszwalb exact separable Euclidean transform; O(width*height)",
+    "fixture_max_pixels": 1048576,
+    "network_downloads": false,
+    "ort_model_peak_bytes": null,
+    "ort_model_peak_status": "unknown until approved checkpoint runtime measurement",
+    "peak_memory_bytes_cap": 536870912,
+    "real_1024_status": "skipped: approved checkpoint and model activation measurement unavailable",
+    "real_2048_status": "closed: approved checkpoint and model activation measurement unavailable"
+  },
+  "schema": "bgremove.m11.smoke.v1",
+  "source": {
+    "commit": "f141a311af67fb1da64269c508a6d1f786420801",
+    "fixture_license": {
+      "path": "models/M11_FBA_SYNTHETIC_LICENSE.txt",
+      "sha256": "4fafbebf6846c1c8cd5fe7ab4fbcc79e5e853f2b9fa23f8b8c7ca111d5b0c4d0"
+    },
+    "license": {
+      "path": "projects/python/image-background-remove-tool/LICENSE",
+      "sha256": "0bf5be32b9b3623d3f001a108569e8456819a72af7a39e2aee67747527ecfd17"
+    },
+    "network_downloads": false,
+    "repository": "projects/python/image-background-remove-tool",
+    "runtime": {
+      "numpy": "2.3.2",
+      "onnxruntime": "1.23.2",
+      "opencv": "4.10.0",
+      "pillow": "12.2.0",
+      "python": "3.12.11",
+      "torch": "2.9.1"
+    },
+    "source_file_sha256": {
+      "carvekit/ml/arch/fba_matting/models.py": "4c38113ae01338ba41b912efc6bf49997f8734612338fe3f366c0c879387f9bb",
+      "carvekit/ml/arch/fba_matting/transforms.py": "692e78544cd943c6ee9424c9f9f7c3f0f72ced2e17fb212698c169fc56101002",
+      "carvekit/ml/wrap/fba_matting.py": "96bcb756f1ef0f333bf5e109a58b90d3a58447798fda3df26e3e6f54605e3ce0"
+    },
+    "source_relevant_files_sha256": "93739f4c8a548ce0e704978c23b4227b163ac7e1849d7e5274551b0e2ffac399",
+    "tracked_source_clean": true
+  },
+  "source_execution": true,
+  "synthetic_graph": true
+}
