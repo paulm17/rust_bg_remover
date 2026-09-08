@@ -3,8 +3,12 @@ name = "bgremove-matting"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "M1 trimap/refiner boundary; algorithms begin in M9/M10/M11/M12"
+description = "Deterministic morphology and trimap primitives for M9 matting"
 
 [dependencies]
 bgremove-core = { path = "../bgremove-core" }
 anyhow.workspace = true
+
+[dev-dependencies]
+image.workspace = true
+serde_json.workspace = true

@@ -4,7 +4,10 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use bgremove_color::OriginalRgbEstimator;
 use bgremove_core::io::{encode_mask_png, encode_straight_rgba_png, load_canonical};
 use bgremove_core::{NoOpSegmenter, Pipeline, PipelineConfig, TransparentInputPolicy};
-use bgremove_matting::IdentityMaskTransform;
+use bgremove_matting::{
+    carvekit_probability_trimap, rembg_post_process, rembg_symmetric_trimap, CarveKitTrimapConfig,
+    IdentityMaskTransform, RembgTrimapConfig, TrimapClass,
+};
 use clap::{Parser, Subcommand};
 use image::{GenericImageView, ImageDecoder, ImageReader};
 use serde::{Deserialize, Serialize};
@@ -180,6 +183,12 @@ enum Command {
     /// until a hash-verified, licence-approved external checkpoint is given.
     M8Smoke {
         #[arg(long, default_value = "runs/m8-rmbg")]
+        output: PathBuf,
+    },
+    /// Validate the pinned M9 trimap fixture and emit deterministic trimap
+    /// PNGs plus unknown-band statistics. No model or network access occurs.
+    M9Smoke {
+        #[arg(long, default_value = "runs/m9-trimap")]
         output: PathBuf,
     },
 }
@@ -475,6 +484,7 @@ fn main() -> Result<()> {
             workers,
         } => write_m7_child(&input, &reference, &manifest, &provider, workers)?,
         Command::M8Smoke { output } => write_m8_smoke(&output)?,
+        Command::M9Smoke { output } => write_m9_smoke(&output)?,
     }
     Ok(())
 }
@@ -1050,6 +1060,364 @@ fn write_m8_smoke(output: &Path) -> Result<()> {
     fs::create_dir_all(output)?;
     fs::write(output.join("report.json"), canonical)?;
     println!("wrote {}", output.join("report.json").display());
+    Ok(())
+}
+
+fn write_m9_smoke(output: &Path) -> Result<()> {
+    let fixture_root = Path::new("tests/fixtures/m9");
+    let reference_root = fixture_root.join("reference");
+    let parity_path = reference_root.join("parity.json");
+    let authority_path = fixture_root.join("authoritative-report.json");
+    let parity_text = fs::read_to_string(&parity_path)
+        .with_context(|| format!("read {}", parity_path.display()))?;
+    let parity: serde_json::Value = serde_json::from_str(&parity_text)?;
+    ensure!(
+        parity["schema"] == "m9.trimap-parity.v1"
+            && parity["authoritative_sources_executed"] == true,
+        "M9 parity fixture is not an executed authoritative fixture"
+    );
+    let authority_text = fs::read_to_string(&authority_path)
+        .with_context(|| format!("read {}", authority_path.display()))?;
+    let authority: serde_json::Value = serde_json::from_str(&authority_text)?;
+    ensure!(
+        authority["schema"] == "m9.trimap-authoritative.v1"
+            && authority["authoritative_sources_executed"] == true,
+        "M9 authoritative report is not executed"
+    );
+    ensure!(authority["profiles"]
+        .as_array()
+        .is_some_and(|profiles| profiles.len() == 2));
+    ensure!(parity["profiles"] == authority["profiles"]);
+    ensure!(parity["rembg_cases"] == authority["rembg_cases"]);
+    ensure!(parity["gaussian_reference"] == authority["gaussian_reference"]);
+    ensure!(parity["oversized_erosion_reference"] == authority["oversized_erosion_reference"]);
+    for (name, artifact) in parity["artifacts"]
+        .as_object()
+        .ok_or_else(|| anyhow!("M9 parity artifacts are not an object"))?
+    {
+        let path = artifact["path"]
+            .as_str()
+            .ok_or_else(|| anyhow!("M9 parity artifact path is missing"))?;
+        let bytes = fs::read(reference_root.join(path))?;
+        ensure!(
+            hash_bytes(&bytes) == artifact["sha256"],
+            "M9 parity artifact hash mismatch for {name}"
+        );
+    }
+    for profile in authority["profiles"].as_array().unwrap() {
+        let path = profile["output"]["path"]
+            .as_str()
+            .ok_or_else(|| anyhow!("M9 authority output path is missing"))?;
+        let bytes = fs::read(reference_root.join(path))?;
+        ensure!(
+            hash_bytes(&bytes) == profile["output"]["sha256"],
+            "M9 authority output hash mismatch for {path}"
+        );
+    }
+    fs::create_dir_all(output)?;
+    let input_bytes = fs::read(reference_root.join("input-mask.png"))?;
+    ensure!(
+        hash_bytes(&input_bytes) == parity["artifacts"]["input-mask.png"]["sha256"],
+        "M9 input parity hash mismatch"
+    );
+    let input_image = image::load_from_memory(&input_bytes)?.to_luma8();
+    let values = input_image.as_raw();
+    let width = input_image.width();
+    let height = input_image.height();
+    let rembg = rembg_symmetric_trimap(
+        values,
+        width,
+        height,
+        RembgTrimapConfig {
+            foreground_threshold: 200,
+            background_threshold: 10,
+            erode_size: 3,
+        },
+    )?;
+    let carvekit = carvekit_probability_trimap(
+        values,
+        width,
+        height,
+        CarveKitTrimapConfig {
+            probability_threshold: 200,
+            dilation_radius: bgremove_matting::Radius::Absolute(1),
+            erosion_iterations: 1,
+        },
+    )?;
+    let classes_to_bytes = |classes: &[TrimapClass], unknown: u8| {
+        classes
+            .iter()
+            .map(|class| match class {
+                TrimapClass::Background => 0,
+                TrimapClass::Unknown => unknown,
+                TrimapClass::Foreground => 255,
+            })
+            .collect::<Vec<_>>()
+    };
+    let rust_outputs = [
+        (
+            "rembg-symmetric-trimap.png",
+            classes_to_bytes(rembg.data(), 128),
+        ),
+        (
+            "carvekit-probability-trimap.png",
+            classes_to_bytes(carvekit.data(), 127),
+        ),
+    ];
+    let mut comparisons = Vec::new();
+    let write_gray = |path: &Path, width: u32, height: u32, bytes: &[u8]| -> Result<()> {
+        let image = image::GrayImage::from_raw(width, height, bytes.to_vec())
+            .ok_or_else(|| anyhow!("invalid grayscale dimensions for {}", path.display()))?;
+        image.save(path)?;
+        Ok(())
+    };
+    fs::write(output.join("input-mask.png"), &input_bytes)?;
+    for (name, rust_values) in rust_outputs {
+        let expected_bytes = fs::read(reference_root.join(name))?;
+        ensure!(
+            hash_bytes(&expected_bytes) == parity["artifacts"][name]["sha256"],
+            "M9 parity artifact hash mismatch for {name}"
+        );
+        let expected = image::load_from_memory(&expected_bytes)?.to_luma8();
+        ensure!(
+            expected.as_raw() == &rust_values,
+            "Rust M9 output differs from authoritative {name}"
+        );
+        write_gray(&output.join(name), width, height, &rust_values)?;
+        comparisons.push(serde_json::json!({
+            "name": name,
+            "rust_matches_authority": true,
+            "reference_sha256": hash_bytes(expected.as_raw()),
+            "rust_sha256": hash_bytes(&rust_values),
+        }));
+    }
+    let post_input =
+        image::load_from_memory(&fs::read(reference_root.join("post-process-input.png"))?)?
+            .to_luma8();
+    let post_values =
+        rembg_post_process(post_input.as_raw(), post_input.width(), post_input.height())?;
+    let post_expected_bytes = fs::read(reference_root.join("rembg-post-process.png"))?;
+    ensure!(
+        hash_bytes(&post_expected_bytes) == parity["artifacts"]["rembg-post-process.png"]["sha256"],
+        "M9 post-process parity artifact hash mismatch"
+    );
+    let post_expected = image::load_from_memory(&post_expected_bytes)?.to_luma8();
+    ensure!(
+        post_expected.as_raw() == &post_values,
+        "Rust M9 post_process differs from authority"
+    );
+    write_gray(
+        &output.join("rembg-post-process.png"),
+        post_input.width(),
+        post_input.height(),
+        &post_values,
+    )?;
+    comparisons.push(serde_json::json!({
+        "name": "rembg-post-process.png",
+        "rust_matches_authority": true,
+        "reference_sha256": hash_bytes(post_expected.as_raw()),
+        "rust_sha256": hash_bytes(&post_values),
+    }));
+    for (name, size) in [
+        ("rembg-symmetric-trimap-e10.png", 10),
+        ("rembg-symmetric-trimap-e0.png", 0),
+    ] {
+        let erode_input =
+            image::load_from_memory(&fs::read(reference_root.join("erode-mask.png"))?)?.to_luma8();
+        let result = rembg_symmetric_trimap(
+            erode_input.as_raw(),
+            erode_input.width(),
+            erode_input.height(),
+            RembgTrimapConfig {
+                foreground_threshold: 200,
+                background_threshold: 10,
+                erode_size: size,
+            },
+        )?;
+        let bytes = classes_to_bytes(result.data(), 128);
+        let expected_bytes = fs::read(reference_root.join(name))?;
+        ensure!(
+            hash_bytes(&expected_bytes) == parity["artifacts"][name]["sha256"],
+            "M9 erosion parity artifact hash mismatch for {name}"
+        );
+        let expected = image::load_from_memory(&expected_bytes)?.to_luma8();
+        ensure!(
+            expected.as_raw() == &bytes,
+            "Rust M9 output differs from authoritative {name}"
+        );
+        write_gray(
+            &output.join(name),
+            erode_input.width(),
+            erode_input.height(),
+            &bytes,
+        )?;
+        comparisons.push(serde_json::json!({
+            "name": name,
+            "rust_matches_authority": true,
+            "reference_sha256": hash_bytes(expected.as_raw()),
+            "rust_sha256": hash_bytes(&bytes),
+        }));
+    }
+    let gaussian_ref: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+        reference_root.join("gaussian-values.json"),
+    )?)?;
+    let gaussian_input = gaussian_ref["input"]
+        .as_array()
+        .ok_or_else(|| anyhow!("invalid Gaussian fixture input"))?
+        .iter()
+        .map(|value| value.as_u64().map(|v| v as u8))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| anyhow!("invalid Gaussian fixture value"))?;
+    let gaussian_expected = gaussian_ref["values"]
+        .as_array()
+        .ok_or_else(|| anyhow!("invalid Gaussian fixture output"))?;
+    let gaussian =
+        bgremove_matting::gaussian_blur(&gaussian_input, gaussian_input.len() as u32, 1, 1.3)?;
+    ensure!(gaussian.len() == gaussian_expected.len());
+    for (actual, expected) in gaussian.iter().zip(gaussian_expected) {
+        ensure!(
+            (actual - expected.as_f64().unwrap()).abs() < 1e-10,
+            "Rust Gaussian differs from authority"
+        );
+    }
+    let gaussian_output = serde_json::json!({
+        "input": gaussian_input,
+        "sigma": 1.3,
+        "values": gaussian,
+    });
+    let mut gaussian_bytes = serde_json::to_vec_pretty(&gaussian_output)?;
+    gaussian_bytes.push(b'\n');
+    fs::write(output.join("gaussian-values.json"), &gaussian_bytes)?;
+    let gaussian_reference_bytes = fs::read(reference_root.join("gaussian-values.json"))?;
+    ensure!(
+        hash_bytes(&gaussian_reference_bytes)
+            == parity["artifacts"]["gaussian-values.json"]["sha256"],
+        "M9 Gaussian parity artifact hash mismatch"
+    );
+    comparisons.push(serde_json::json!({
+        "name": "gaussian-values.json",
+        "rust_matches_authority": true,
+        "reference_sha256": hash_bytes(&gaussian_reference_bytes),
+        "rust_sha256": hash_bytes(&gaussian_bytes),
+    }));
+    let oversized_ref = parity["oversized_erosion_reference"].clone();
+    let oversized_input = oversized_ref["input"][0]
+        .as_array()
+        .ok_or_else(|| anyhow!("invalid oversized erosion input"))?
+        .iter()
+        .map(|value| value.as_u64().map(|v| v as u8))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| anyhow!("invalid oversized erosion sample"))?;
+    let oversized_values = bgremove_matting::binary_erosion_kernel(
+        &oversized_input,
+        5,
+        1,
+        oversized_ref["kernel_size"]
+            .as_u64()
+            .ok_or_else(|| anyhow!("invalid oversized erosion kernel"))? as u32,
+        bgremove_matting::BorderValue::True,
+    )?;
+    let oversized_output = serde_json::json!({
+        "input": [oversized_input],
+        "shape": [1, 5],
+        "kernel_size": 6,
+        "border_value": 1,
+        "values": [oversized_values],
+    });
+    let mut oversized_bytes = serde_json::to_vec_pretty(&oversized_output)?;
+    oversized_bytes.push(b'\n');
+    let oversized_reference_bytes = fs::read(reference_root.join("oversized-erosion.json"))?;
+    ensure!(
+        hash_bytes(&oversized_reference_bytes)
+            == parity["artifacts"]["oversized-erosion.json"]["sha256"],
+        "M9 oversized erosion parity artifact hash mismatch"
+    );
+    ensure!(
+        oversized_values == vec![1, 1, 0, 0, 0],
+        "Rust oversized erosion differs from authority"
+    );
+    fs::write(output.join("oversized-erosion.json"), &oversized_bytes)?;
+    comparisons.push(serde_json::json!({
+        "name": "oversized-erosion.json",
+        "rust_matches_authority": true,
+        "reference_sha256": hash_bytes(&oversized_reference_bytes),
+        "rust_sha256": hash_bytes(&oversized_bytes),
+    }));
+
+    let artifact_names = [
+        "input-mask.png",
+        "rembg-symmetric-trimap.png",
+        "carvekit-probability-trimap.png",
+        "rembg-post-process.png",
+        "rembg-symmetric-trimap-e10.png",
+        "rembg-symmetric-trimap-e0.png",
+        "gaussian-values.json",
+        "oversized-erosion.json",
+    ];
+    let mut artifacts = Vec::new();
+    for name in artifact_names {
+        let destination = output.join(name);
+        let bytes = fs::read(&destination)?;
+        if name.ends_with(".json") {
+            artifacts.push(serde_json::json!({
+                "name": name,
+                "path": name,
+                "sha256": hash_bytes(&bytes),
+                "unknown_value": serde_json::Value::Null,
+                "unknown_pixels": serde_json::Value::Null,
+                "unknown_fraction": serde_json::Value::Null,
+            }));
+            continue;
+        }
+        let image = image::load_from_memory(&bytes)?.to_luma8();
+        let is_trimap = name.contains("trimap");
+        let unknown_value = if is_trimap {
+            Some(if name == "carvekit-probability-trimap.png" {
+                127
+            } else {
+                128
+            })
+        } else {
+            None
+        };
+        let unknown_pixels = unknown_value.map(|value| {
+            image
+                .as_raw()
+                .iter()
+                .filter(|sample| **sample == value)
+                .count()
+        });
+        let total = image.as_raw().len();
+        artifacts.push(serde_json::json!({
+            "name": name,
+            "path": name,
+            "sha256": hash_bytes(&bytes),
+            "width": image.width(),
+            "height": image.height(),
+            "unknown_value": unknown_value,
+            "unknown_pixels": unknown_pixels,
+            "unknown_fraction": unknown_pixels.map(|count| count as f64 / total as f64),
+        }));
+    }
+    let report = serde_json::json!({
+        "schema": "m9.trimap-smoke.v1",
+        "status": "fixture-only",
+        "source": {
+            "authoritative_report": "tests/fixtures/m9/authoritative-report.json",
+            "authoritative_report_sha256": hash_bytes(authority_text.as_bytes()),
+            "parity_fixture": "tests/fixtures/m9/reference/parity.json",
+            "parity_fixture_sha256": hash_bytes(parity_text.as_bytes()),
+        },
+        "profiles": authority["profiles"].clone(),
+        "comparisons": comparisons,
+        "semantics": parity["semantics"].clone(),
+        "artifacts": artifacts,
+        "network": {"downloads": false},
+    });
+    fs::write(
+        output.join("report.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
     Ok(())
 }
 
@@ -2904,6 +3272,29 @@ mod tests {
         }
         assert_eq!(report["gates"]["runtime_downloads"], false);
         assert_eq!(report["gates"]["raw_alpha_no_cleanup"], true);
+    }
+
+    #[test]
+    fn m9_report_has_both_source_profiles_and_quantitative_unknown_stats() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join("runs/m9-trimap/report.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["schema"], "m9.trimap-smoke.v1");
+        assert_eq!(report["status"], "fixture-only");
+        assert_eq!(report["network"]["downloads"], false);
+        assert_eq!(report["profiles"].as_array().unwrap().len(), 2);
+        for artifact in report["artifacts"].as_array().unwrap() {
+            assert_eq!(artifact["sha256"].as_str().unwrap().len(), 64);
+            if artifact["name"].as_str().unwrap().ends_with(".png") {
+                assert!(artifact["width"].as_u64().unwrap() > 0);
+                assert!(artifact["height"].as_u64().unwrap() > 0);
+            }
+            if artifact["name"].as_str().unwrap().contains("trimap") {
+                assert!(artifact["unknown_fraction"].as_f64().unwrap() > 0.0);
+            }
+        }
     }
 
     #[test]

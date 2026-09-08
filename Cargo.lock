@@ -129,6 +129,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bgremove-core",
+ "image",
+ "serde_json",
 ]
 
 [[package]]

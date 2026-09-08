@@ -18,6 +18,9 @@
 !/runs/m6-carvekit/report.json
 !/runs/m7-birefnet/
 !/runs/m7-birefnet/report.json
+!/runs/m9-trimap/
+!/runs/m9-trimap/*
+!/runs/m9-trimap/report.json
 /models/*.onnx
 /models/*.ort
 /corpus/inputs/

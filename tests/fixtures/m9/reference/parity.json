@@ -1,0 +1,224 @@
+{
+  "artifacts": {
+    "carvekit-probability-trimap.png": {
+      "path": "carvekit-probability-trimap.png",
+      "sha256": "22c71eb8000dcf092b4ede9018623ebf3c516224fea375bce158ed8d92c7ff0d"
+    },
+    "erode-mask.png": {
+      "path": "erode-mask.png",
+      "sha256": "512c2602661c2481fa1233fc76d2dd5136a8f618fa3c39454ca1599bdb1ddd76"
+    },
+    "gaussian-values.json": {
+      "path": "gaussian-values.json",
+      "sha256": "d4ce819638c8baf35bfc087b603b1c17f5bc1bb685929d49a7fb16a5f955d584"
+    },
+    "input-mask.png": {
+      "path": "input-mask.png",
+      "sha256": "584b450ea42c8799fb1c649a0a24a5f1fc067b7e6e0768e4a6900e06ab1bd5a8"
+    },
+    "oversized-erosion.json": {
+      "path": "oversized-erosion.json",
+      "sha256": "c7805859b9de90da67367b2fa63aa22423664ddaa9d78a2a27eebb2460021b40"
+    },
+    "post-process-input.png": {
+      "path": "post-process-input.png",
+      "sha256": "70ba026d91e74971bab8091565401b3bb188cdf230802f060b00bccfdd301abf"
+    },
+    "rembg-post-process.png": {
+      "path": "rembg-post-process.png",
+      "sha256": "70ba026d91e74971bab8091565401b3bb188cdf230802f060b00bccfdd301abf"
+    },
+    "rembg-symmetric-trimap-e0.png": {
+      "path": "rembg-symmetric-trimap-e0.png",
+      "sha256": "c9dec4da7ab4c879a1f81b1086f5182cb5ec78452e433ef0b234a0e305cb06c5"
+    },
+    "rembg-symmetric-trimap-e10.png": {
+      "path": "rembg-symmetric-trimap-e10.png",
+      "sha256": "d690e205877ef1a6f7a3b929db3af67c63e412fa2a790e18393da191b9ec9233"
+    },
+    "rembg-symmetric-trimap.png": {
+      "path": "rembg-symmetric-trimap.png",
+      "sha256": "62574c84720f6ae5877bf2150860c036a214ac18b5d4c85b8ebfe9ab16dc7412"
+    }
+  },
+  "authoritative_sources_executed": true,
+  "gaussian_reference": {
+    "input": [
+      0,
+      64,
+      128,
+      255,
+      0
+    ],
+    "path": "gaussian-values.json",
+    "sha256": "d4ce819638c8baf35bfc087b603b1c17f5bc1bb685929d49a7fb16a5f955d584",
+    "sigma": 1.3,
+    "values": [
+      41.54102418046294,
+      74.63672963490112,
+      113.01407533973892,
+      119.31902170215041,
+      98.4891491427466
+    ]
+  },
+  "input": {
+    "dtype": "uint8",
+    "path": "input-mask.png",
+    "sha256": "584b450ea42c8799fb1c649a0a24a5f1fc067b7e6e0768e4a6900e06ab1bd5a8",
+    "shape": [
+      6,
+      8
+    ]
+  },
+  "oversized_erosion_reference": {
+    "border_value": 1,
+    "input": [
+      [
+        1,
+        1,
+        1,
+        1,
+        0
+      ]
+    ],
+    "kernel_size": 6,
+    "path": "oversized-erosion.json",
+    "sha256": "c7805859b9de90da67367b2fa63aa22423664ddaa9d78a2a27eebb2460021b40",
+    "values": [
+      [
+        1,
+        1,
+        0,
+        0,
+        0
+      ]
+    ]
+  },
+  "profiles": [
+    {
+      "name": "rembg-symmetric",
+      "output": {
+        "path": "rembg-symmetric-trimap.png",
+        "sha256": "62574c84720f6ae5877bf2150860c036a214ac18b5d4c85b8ebfe9ab16dc7412",
+        "shape": [
+          6,
+          8
+        ]
+      },
+      "settings": {
+        "background_threshold": 10,
+        "erode_size": 3,
+        "foreground_threshold": 200
+      },
+      "source": {
+        "commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+        "execution": "complete pinned rembg.matting module and exact post_process body; model session never constructed",
+        "license_path": "projects/python/rembg/LICENSE.txt",
+        "license_sha256": "90a3215072968fd304669c5389f04f1274a587abdd0507d99dead0f5511f8999",
+        "repository": "projects/python/rembg",
+        "source_file_sha256": {
+          "projects/python/rembg/rembg/bg.py": "2e1977b6d16d5369e2c20c5ca5d9ba2e2c0228f8beef39c5d2296df1879df62b",
+          "projects/python/rembg/rembg/matting.py": "e86b7e608354abd24499f64ef98edfd0e29d66b65dbc3995e46220bdcfd833e1"
+        },
+        "source_files": [
+          "projects/python/rembg/rembg/matting.py",
+          "projects/python/rembg/rembg/bg.py"
+        ],
+        "source_tree_sha256": "ea01e0cb5fbb6ff3cf62b39adf28357a55b6b94d3d9f40add8fd165b821066cf",
+        "tracked_source_clean": true
+      }
+    },
+    {
+      "name": "carvekit-probability-aware",
+      "output": {
+        "path": "carvekit-probability-trimap.png",
+        "sha256": "22c71eb8000dcf092b4ede9018623ebf3c516224fea375bce158ed8d92c7ff0d",
+        "shape": [
+          6,
+          8
+        ]
+      },
+      "settings": {
+        "erosion_iters": 1,
+        "kernel_size": 1,
+        "probability_threshold": 200
+      },
+      "source": {
+        "commit": "f141a311af67fb1da64269c508a6d1f786420801",
+        "execution": "exact pinned TrimapGenerator and imported trimap operations",
+        "license_path": "projects/python/image-background-remove-tool/LICENSE",
+        "license_sha256": "0bf5be32b9b3623d3f001a108569e8456819a72af7a39e2aee67747527ecfd17",
+        "repository": "projects/python/image-background-remove-tool",
+        "source_file_sha256": {
+          "projects/python/image-background-remove-tool/carvekit/trimap/add_ops.py": "e0425e0efe7f13147cf9726d6f5f71ca179cdd6097a38bd2952e921cdfe8777d",
+          "projects/python/image-background-remove-tool/carvekit/trimap/cv_gen.py": "442257c7a9573de3ca08a7c189a6f95266f5cd7f0bf6d0f800e9ed28566fadaa",
+          "projects/python/image-background-remove-tool/carvekit/trimap/generator.py": "c1ab94b7395a9e76777135c23cd40cd4a10826dfa61fe5035f82fc226f13a6ab"
+        },
+        "source_files": [
+          "projects/python/image-background-remove-tool/carvekit/trimap/cv_gen.py",
+          "projects/python/image-background-remove-tool/carvekit/trimap/add_ops.py",
+          "projects/python/image-background-remove-tool/carvekit/trimap/generator.py"
+        ],
+        "source_tree_sha256": "22bc32aa1dc0d2d0eb65b0a4c9238204457986fe07b86120cb6b6fe17beb41fb",
+        "tracked_source_clean": true
+      }
+    }
+  ],
+  "rembg_cases": [
+    {
+      "input": "erode-mask.png",
+      "name": "erode_size_10",
+      "path": "rembg-symmetric-trimap-e10.png",
+      "settings": {
+        "background_threshold": 10,
+        "erode_size": 10,
+        "foreground_threshold": 200
+      },
+      "sha256": "d690e205877ef1a6f7a3b929db3af67c63e412fa2a790e18393da191b9ec9233",
+      "shape": [
+        21,
+        21
+      ]
+    },
+    {
+      "input": "erode-mask.png",
+      "name": "erode_size_0_default_cross",
+      "path": "rembg-symmetric-trimap-e0.png",
+      "settings": {
+        "background_threshold": 10,
+        "erode_size": 0,
+        "foreground_threshold": 200
+      },
+      "sha256": "c9dec4da7ab4c879a1f81b1086f5182cb5ec78452e433ef0b234a0e305cb06c5",
+      "shape": [
+        21,
+        21
+      ]
+    },
+    {
+      "input": "post-process-input",
+      "name": "post_process_reflect",
+      "path": "rembg-post-process.png",
+      "settings": {
+        "sigma": 2.0,
+        "threshold": 127
+      },
+      "sha256": "70ba026d91e74971bab8091565401b3bb188cdf230802f060b00bccfdd301abf",
+      "shape": [
+        3,
+        3
+      ]
+    }
+  ],
+  "schema": "m9.trimap-parity.v1",
+  "semantics": {
+    "binary_threshold": "strict greater-than",
+    "carvekit_trimap": "prob_filter > threshold, (2r+1)^2 dilation, unknown 127, foreground 255, one 3x3 erosion iteration per configured iteration",
+    "disk_opening": "disk offsets dx^2+dy^2 <= r^2; erosion then dilation; SciPy/skimage reflect outside",
+    "gaussian": "separable normalized Gaussian, radius floor(4*sigma + 0.5) (SciPy truncate=4), half-sample reflect border, f64 accumulation",
+    "oversized_literal_kernel": "constant-border anchored windows are evaluated exactly without allocating the full structure",
+    "relative_radius": "round(fraction * min(width,height))",
+    "rembg_trimap": "foreground > threshold and background < threshold; literal erode_size square (including even sizes), erode_size=0 uses SciPy default connectivity-1 cross; foreground false/background true border",
+    "square_morphology": "full (2r+1)^2 kernel; constant false outside"
+  }
+}
