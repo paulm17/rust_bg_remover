@@ -5,6 +5,14 @@ use bgremove_core::{
     RefinedMatte, Trimap,
 };
 
+pub mod m10;
+pub use m10::{
+    build_closed_form_laplacian, estimate_foreground_ml, refine_backgroundremover_bounded,
+    refine_closed_form_with_coarse, resize_lanczos_alpha, resize_lanczos_rgb,
+    solve_constrained_alpha_with_coarse, ClosedFormConfig, ClosedFormResult, SolveReport,
+    SolveStatus, SparseMatrix,
+};
+
 pub use bgremove_core::TrimapClass;
 
 /// Explicit identity transform; morphology and trimap algorithms are deferred.

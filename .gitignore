@@ -21,6 +21,8 @@
 !/runs/m9-trimap/
 !/runs/m9-trimap/*
 !/runs/m9-trimap/report.json
+!/runs/m10-matting/
+!/runs/m10-matting/*
 /models/*.onnx
 /models/*.ort
 /corpus/inputs/

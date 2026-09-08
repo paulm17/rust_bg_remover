@@ -3,11 +3,12 @@ name = "bgremove-matting"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Deterministic morphology and trimap primitives for M9 matting"
+description = "Deterministic morphology, trimap, and sparse closed-form matting primitives"
 
 [dependencies]
 bgremove-core = { path = "../bgremove-core" }
 anyhow.workspace = true
+image.workspace = true
 
 [dev-dependencies]
 image.workspace = true

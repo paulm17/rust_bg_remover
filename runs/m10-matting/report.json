@@ -1,0 +1,122 @@
+{
+  "analytic_gate": {
+    "alpha_weighted_foreground_mean_abs": 3.2976531656458974e-6,
+    "composite_max_abs": 3.5762786865234375e-7,
+    "hidden_rgb_under_zero_alpha_excluded": true,
+    "thresholds": {
+      "composite": 0.02,
+      "true_alpha": 0.02,
+      "visible_foreground": 0.02
+    },
+    "true_alpha_max_abs": 2.428889274597168e-6
+  },
+  "artifacts": [
+    "decoded-rgb.f32le",
+    "working-rgb.f32le",
+    "working-coarse-alpha.f32le",
+    "working-trimap.f32le",
+    "trimap.f32le",
+    "working-alpha.f32le",
+    "working-foreground.f32le",
+    "working-background.f32le",
+    "alpha.f32le",
+    "foreground.f32le",
+    "background.f32le",
+    "final-rgba.png"
+  ],
+  "authority_report_sha256": "3798602a49075b48c8cceb1e21514eb1bb8d5a0228e14ac0e85901bce79fb460",
+  "comparison": {
+    "alpha_max_abs": 0.0,
+    "background_max_abs": 0.0,
+    "earliest_divergence": "none within declared tolerances",
+    "final_rgba_max_abs": 1,
+    "foreground_max_abs": 0.0,
+    "laplacian_max_abs": 2.3770054458083223e-7,
+    "raw_alpha_no_cleanup": true,
+    "tolerances": {
+      "alpha": 0.00001,
+      "background": 0.00001,
+      "base_size_resample": 1e-7,
+      "final_rgba": 1,
+      "foreground": 0.00001,
+      "laplacian": 3e-7
+    },
+    "working_stage": {
+      "alpha_max_abs": 4.7460198402404785e-6,
+      "background_max_abs": 3.606081008911133e-6,
+      "coarse_max_abs": 0.0,
+      "coarse_mean_abs": 0.0,
+      "foreground_max_abs": 2.4437904357910156e-6,
+      "rgb_max_abs": 0.0,
+      "rgb_mean_abs": 0.0,
+      "trimap_max_abs": 0.0,
+      "trimap_mean_abs": 0.0
+    },
+    "wrapper_final_rgba_max_abs": 1
+  },
+  "degenerate_cases": {
+    "all_known": {
+      "fallback_used": false,
+      "known_constraints_enforced": true,
+      "status": "Converged"
+    },
+    "underconstrained": {
+      "exact_coarse_alpha": true,
+      "fallback_used": true,
+      "reason": "underconstrained or singular Laplacian; returned coarse alpha",
+      "status": "Breakdown"
+    }
+  },
+  "forced_fallback": {
+    "absolute_residual": 1.1901512460128836,
+    "exact_coarse_alpha": true,
+    "fallback_used": true,
+    "iterations": 1,
+    "relative_residual": 0.08458685394951233,
+    "status": "MaxIterations"
+  },
+  "input": {
+    "canonical_dimensions": [
+      65,
+      45
+    ],
+    "decoded_sha256": "e3b57c0a6b022c1735dae613a139b05ee0fae05554e9917f64b2a7bd85fddc9a",
+    "trimap_sha256": "1e5939b30f994e6b0e3ef1d9b4988c01aa0c3f01308684fd78b605e6e14a421e",
+    "working_dimensions": [
+      48,
+      33
+    ]
+  },
+  "parity_sha256": "185985311de5353a7b77fd798bb001993f0337be1d0fb82d5a70fa1ce14a1dcc",
+  "schema": "bgremove.m10.smoke.v1",
+  "solver": {
+    "absolute_residual": 1.318924823344954e-6,
+    "assembly_peak_estimated_bytes": 3747096,
+    "canonical_dimensions": [
+      65,
+      45
+    ],
+    "estimated_memory_bytes": 3747096,
+    "fallback_reason": null,
+    "fallback_used": false,
+    "iterations": 642,
+    "limits": {
+      "max_assembly_entries": 10000000,
+      "max_iterations": 10000,
+      "max_memory_bytes": 536870912,
+      "max_nnz": 50000000,
+      "max_pixels": 1000000,
+      "tolerance": 1e-7
+    },
+    "raw_assembly_entries": 115506,
+    "relative_residual": 9.373909557832644e-8,
+    "solve_peak_estimated_bytes": 1132304,
+    "sparse_nnz": 24803,
+    "status": "Converged",
+    "working_dimensions": [
+      48,
+      33
+    ]
+  },
+  "source_execution": true
+}

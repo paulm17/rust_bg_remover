@@ -1,0 +1,194 @@
+{
+  "analytic": {
+    "canonical_dimensions": [
+      65,
+      45
+    ],
+    "separate_case": {
+      "coarse_sha256": "aebbe3cf5251ae403158f9542bad3283c7ff1cb9f8d7d9e0ca3f5e153902c59f",
+      "height": 13,
+      "image_sha256": "f8b3ca6b735e51bac3e310e45ae05665bb6d963c71f8c40b3a3e1d8b901a982e",
+      "trimap_sha256": "9bb709dfd31d0ea7d461207876fbda0e4b37548e98a34652f459c2597e613774",
+      "true_alpha_sha256": "aebbe3cf5251ae403158f9542bad3283c7ff1cb9f8d7d9e0ca3f5e153902c59f",
+      "true_background_sha256": "a9d932bda68d1bf86a9caae22a1672ecf5a0f7aad8e9a002cb44ef743a8fff99",
+      "true_foreground_sha256": "9e04003ad407153c70d64c61b97ed016194ef9083659fa578526a1ef495bcc14",
+      "width": 17
+    },
+    "true_alpha_sha256": "2363c4e010a0d57d7bb95d337edd926e59dd7ca5eaec4052f9f11152c511a1e0",
+    "true_background_sha256": "40fee63ad772b5b916fe1c365659a56c6955e927ed3980ac75fedee59ae3a2c4",
+    "true_foreground_sha256": "61d6224ba7e2cfebe97ce9fcccd3efccc0f6710d621dd302235e915ec1bce2de"
+  },
+  "authoritative_sources_executed": true,
+  "input": {
+    "coarse_sha256": "f6b2c3fbf3d007d8a651e9e2c74271079e93ccde10252bb6f7dac98c4cfa1478",
+    "height": 33,
+    "image_sha256": "7170c0f6805380879a32e0d68b14f8380e4db633e83bdcd5f7417d413d47e39b",
+    "trimap_sha256": "a55c0fbc27f8b9a165e8f35eb2db82b3494ec1e36a947e3d6ba06a41bf874481",
+    "width": 48
+  },
+  "parameters": {
+    "constraint_mode": "unknown-only; known alpha fixed",
+    "epsilon": 1e-07,
+    "foreground": {
+      "gradient_weight": 1.0,
+      "n_big_iterations": 2,
+      "n_small_iterations": 10,
+      "non_power_two_levels": true,
+      "regularization": 1e-05,
+      "small_size": 32
+    },
+    "radius": 1,
+    "wrapper": {
+      "background_threshold": 10,
+      "base_size": 48,
+      "canonical_dimensions": [
+        65,
+        45
+      ],
+      "erode_structure_size": 3,
+      "foreground_threshold": 240,
+      "resampling": "Pillow LANCZOS; uint8 quantization before source stages",
+      "working_dimensions": [
+        48,
+        33
+      ]
+    }
+  },
+  "resource_limits": {
+    "max_assembly_entries": 10000000,
+    "max_iterations": 10000,
+    "max_memory_bytes": 536870912,
+    "max_pixels": 1000000,
+    "max_sparse_nnz": 50000000,
+    "max_working_dimension": 4096,
+    "network_downloads": false
+  },
+  "schema": "bgremove.m10.authoritative.v1",
+  "source": {
+    "backgroundremover_bg_py_sha256": "4ab631a8f2df06fabd4b05fc36894057ba93f0fd1250b4c60d2bdbe775936047",
+    "backgroundremover_commit": "fa480627829759b902f8c233388d7aa67ab38099",
+    "backgroundremover_file": "projects/python/backgroundremover/backgroundremover/bg.py",
+    "backgroundremover_license": {
+      "identifier": "MIT",
+      "path": "projects/python/backgroundremover/LICENSE.txt",
+      "sha256": "310ef21ebd68c4095329b33e269fdc4831b7a2468beb8ab6e9ebf8b41bc21cb1"
+    },
+    "execution": "exact pinned alpha_matting_cutout function body loaded from bg.py; package import is intentionally avoided because optional video dependency is absent",
+    "license_artifact": {
+      "path": "tests/fixtures/m10/LICENSE",
+      "sha256": "f4b17964150d51658e31321c6b1d6c182ec4c57274b5cce289bb5c7957d8b3ab"
+    },
+    "network_downloads": false,
+    "pymatting_license": {
+      "identifier": "MIT",
+      "path": "pymatting-1.1.15.dist-info/licenses/LICENSE.md",
+      "sha256": "7be1f2cc0777ebabe655ba85c59ba1026ace94d7d906c791c5ada0e7b4b68323"
+    },
+    "pymatting_source_files": {
+      "pymatting/alpha/estimate_alpha_cf.py": {
+        "path": "pymatting/alpha/estimate_alpha_cf.py",
+        "sha256": "f03a68fc9dc354740837b3596b2aa97106e7d210dbaebfb9d60cda573f4b69dc"
+      },
+      "pymatting/foreground/estimate_foreground_ml.py": {
+        "path": "pymatting/foreground/estimate_foreground_ml.py",
+        "sha256": "fd78cfb439940debc54c89a00638f025c0daef0bacc07fba393572787e9431ca"
+      },
+      "pymatting/laplacian/cf_laplacian.py": {
+        "path": "pymatting/laplacian/cf_laplacian.py",
+        "sha256": "673f02ccce6fde413dfd421f126a8e3f332722939e73b154707f2255b7953038"
+      },
+      "pymatting/preconditioner/ichol.py": {
+        "path": "pymatting/preconditioner/ichol.py",
+        "sha256": "4d0172d6882dc17998cc19a1313e1915bb7fbe3dee3c82805ac1b41c10c0599b"
+      },
+      "pymatting/preconditioner/jacobi.py": {
+        "path": "pymatting/preconditioner/jacobi.py",
+        "sha256": "9898f81a3d9af388aa872b64212635928ff838f697ad77b283185e8a82873d7d"
+      },
+      "pymatting/solver/cg.py": {
+        "path": "pymatting/solver/cg.py",
+        "sha256": "ae48b907782033035506320deb76d92701c7cc70be15046a9583f702605284a6"
+      },
+      "pymatting/util/util.py": {
+        "path": "pymatting/util/util.py",
+        "sha256": "5dfc3b60f639372ed45bc85b897186bc351ef1b7076ae775543ee597d98b5906"
+      }
+    },
+    "pymatting_version": "1.1.15",
+    "python_runtime": {
+      "numpy": "2.3.2",
+      "pillow": "12.2.0",
+      "pymatting": "1.1.15",
+      "python": "3.12.11",
+      "scipy": "1.17.0"
+    }
+  },
+  "stage_chain": {
+    "connected": true,
+    "decoded_to_working": true,
+    "final_from_captured_stages": true,
+    "wrapper_final_matches_chain": true
+  },
+  "stages": {
+    "alpha": {
+      "path": "alpha.f32le",
+      "sha256": "454d30a34b21103d6efe0d96b94694999b147d46e84160dedbd52c4c50c1cb5c",
+      "shape": [
+        33,
+        48
+      ]
+    },
+    "background": {
+      "path": "background.f32le",
+      "sha256": "356cad1f487ebe5a039662b5e9e57fb2a93117138506a4399fcb46d98faadf5b",
+      "shape": [
+        33,
+        48,
+        3
+      ]
+    },
+    "constraints": {
+      "path": "constraints.json",
+      "sha256": "7edf8b79819b8cb33b9ab03a809c35d7f90d8a4d2f0ed205010ee7fb1dbebb71",
+      "shape": [
+        1584
+      ]
+    },
+    "final_rgba": {
+      "path": "chain-final-rgba.png",
+      "sha256": "d17514403f563c2f752970bfc55edc6492ce34dcae627af9162527b93917e49d",
+      "shape": [
+        45,
+        65,
+        4
+      ]
+    },
+    "foreground": {
+      "path": "foreground.f32le",
+      "sha256": "30c235509df3fb512dd9674b24256e89e44bc5ba8d7f97c9ffbca59028e7123b",
+      "shape": [
+        33,
+        48,
+        3
+      ]
+    },
+    "laplacian": {
+      "nnz": 39600,
+      "path": "laplacian.json",
+      "sha256": "1e3594bd667b8ac275e12542f9c29fb8c587b09cd05752632df5f7a301691224",
+      "shape": [
+        1584,
+        1584
+      ]
+    },
+    "wrapper_final_rgba": {
+      "path": "final-rgba.png",
+      "sha256": "d17514403f563c2f752970bfc55edc6492ce34dcae627af9162527b93917e49d",
+      "shape": [
+        45,
+        65,
+        4
+      ]
+    }
+  }
+}

@@ -1,0 +1,4 @@
+This deterministic M10 fixture contains only synthetic RGB/alpha data authored
+for this repository.  It contains no model weights and no personal data.  The
+fixture generator and emitted numerical evidence are licensed under the
+repository's MIT OR Apache-2.0 terms.

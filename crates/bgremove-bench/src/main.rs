@@ -9,7 +9,8 @@ use bgremove_matting::{
     IdentityMaskTransform, RembgTrimapConfig, TrimapClass,
 };
 use clap::{Parser, Subcommand};
-use image::{GenericImageView, ImageDecoder, ImageReader};
+use image::codecs::png::PngEncoder;
+use image::{ColorType, GenericImageView, ImageDecoder, ImageEncoder, ImageReader};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -42,6 +43,17 @@ fn straight_rgba_bytes(result: &bgremove_core::Foreground) -> Vec<u8> {
             pixel
         })
         .collect()
+}
+
+fn encode_m10_rgba(image: &image::RgbaImage) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    PngEncoder::new(&mut bytes).write_image(
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        ColorType::Rgba8.into(),
+    )?;
+    Ok(bytes)
 }
 
 const SCHEMA_VERSION: &str = "m0.corpus.v1";
@@ -189,6 +201,12 @@ enum Command {
     /// PNGs plus unknown-band statistics. No model or network access occurs.
     M9Smoke {
         #[arg(long, default_value = "runs/m9-trimap")]
+        output: PathBuf,
+    },
+    /// Run the bounded Rust M10 closed-form matting path against the pinned
+    /// PyMatting/backgroundremover reference. No weights or network access.
+    M10Smoke {
+        #[arg(long, default_value = "runs/m10-matting")]
         output: PathBuf,
     },
 }
@@ -485,6 +503,7 @@ fn main() -> Result<()> {
         } => write_m7_child(&input, &reference, &manifest, &provider, workers)?,
         Command::M8Smoke { output } => write_m8_smoke(&output)?,
         Command::M9Smoke { output } => write_m9_smoke(&output)?,
+        Command::M10Smoke { output } => write_m10_smoke(&output)?,
     }
     Ok(())
 }
@@ -1413,6 +1432,638 @@ fn write_m9_smoke(output: &Path) -> Result<()> {
         "semantics": parity["semantics"].clone(),
         "artifacts": artifacts,
         "network": {"downloads": false},
+    });
+    fs::write(
+        output.join("report.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    Ok(())
+}
+
+fn read_m10_f32(path: &Path, expected: usize) -> Result<Vec<f32>> {
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    ensure!(
+        bytes.len() == expected * 4,
+        "M10 f32 artifact has unexpected length: {}",
+        path.display()
+    );
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect())
+}
+
+fn max_abs_diff(left: &[f32], right: &[f32]) -> Result<f32> {
+    ensure!(left.len() == right.len(), "M10 comparison length mismatch");
+    Ok(left
+        .iter()
+        .zip(right)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max))
+}
+
+fn mean_abs_diff(left: &[f32], right: &[f32]) -> Result<f32> {
+    ensure!(left.len() == right.len(), "M10 comparison length mismatch");
+    if left.is_empty() {
+        return Ok(0.0);
+    }
+    Ok(left
+        .iter()
+        .zip(right)
+        .map(|(a, b)| (a - b).abs())
+        .sum::<f32>()
+        / left.len() as f32)
+}
+
+fn write_m10_smoke(output: &Path) -> Result<()> {
+    let fixture = Path::new("tests/fixtures/m10/reference");
+    let parity: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture.join("parity.json"))?)?;
+    ensure!(
+        parity["schema"] == "bgremove.m10.parity.v1" && parity["source_execution"] == true,
+        "M10 parity fixture is not authoritative"
+    );
+    let authority: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+        fixture.join("authoritative-report.json"),
+    )?)?;
+    ensure!(
+        authority["schema"] == "bgremove.m10.authoritative.v1"
+            && authority["authoritative_sources_executed"] == true,
+        "M10 source report is not authoritative"
+    );
+    ensure!(
+        authority["stage_chain"]
+            == serde_json::json!({"connected":true,"decoded_to_working":true,"final_from_captured_stages":true,"wrapper_final_matches_chain":true}),
+        "M10 source stages are not one connected chain"
+    );
+    ensure!(
+        parity["provenance"] == authority["source"],
+        "M10 parity provenance differs from authority"
+    );
+    let tolerances = &parity["profiles"][0]["tolerances"];
+    let lap_tolerance = tolerances["laplacian"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("M10 Laplacian tolerance missing"))?;
+    let alpha_tolerance = tolerances["alpha"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("M10 alpha tolerance missing"))?;
+    let foreground_tolerance = tolerances["foreground"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("M10 foreground tolerance missing"))?;
+    let background_tolerance = tolerances["background"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("M10 background tolerance missing"))?;
+    let final_tolerance = tolerances["final-rgba"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("M10 final tolerance missing"))? as u8;
+    let resample_tolerance = tolerances["base-size-resample"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("M10 base-size resampling tolerance missing"))?;
+    let analytic_thresholds = &parity["analytic_thresholds"];
+    let analytic_alpha_threshold = analytic_thresholds["true_alpha"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("M10 analytic alpha threshold missing"))?;
+    let analytic_fg_threshold = analytic_thresholds["visible_foreground"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("M10 analytic foreground threshold missing"))?;
+    let analytic_composite_threshold = analytic_thresholds["composite"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("M10 analytic composite threshold missing"))?;
+    ensure!(
+        parity["authority_report"]["sha256"]
+            == serde_json::Value::String(hash_bytes(&fs::read(
+                fixture.join("authoritative-report.json"),
+            )?)),
+        "M10 parity authority hash does not match"
+    );
+    let artifact_object = parity["artifacts"]
+        .as_object()
+        .ok_or_else(|| anyhow!("M10 parity artifacts must be an object"))?;
+    ensure!(
+        !artifact_object.is_empty(),
+        "M10 parity artifacts must not be empty"
+    );
+    for (name, metadata) in artifact_object {
+        let relative = metadata["path"]
+            .as_str()
+            .ok_or_else(|| anyhow!("M10 artifact path missing: {name}"))?;
+        let relative_path = Path::new(relative);
+        ensure!(
+            !relative_path.is_absolute()
+                && !relative_path
+                    .components()
+                    .any(|component| component == std::path::Component::ParentDir),
+            "M10 artifact path is not safely relative: {relative}"
+        );
+        let bytes = fs::read(fixture.join(relative_path))?;
+        ensure!(
+            metadata["bytes"].as_u64() == Some(bytes.len() as u64),
+            "M10 parity artifact byte count mismatch: {name}"
+        );
+        ensure!(
+            metadata["sha256"] == serde_json::Value::String(hash_bytes(&bytes)),
+            "M10 parity artifact hash mismatch: {name}"
+        );
+    }
+    let w = authority["input"]["width"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("M10 working width missing"))? as u32;
+    let h = authority["input"]["height"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("M10 working height missing"))? as u32;
+    let canonical_w = authority["parameters"]["wrapper"]["canonical_dimensions"][0]
+        .as_u64()
+        .ok_or_else(|| anyhow!("M10 canonical width missing"))? as u32;
+    let canonical_h = authority["parameters"]["wrapper"]["canonical_dimensions"][1]
+        .as_u64()
+        .ok_or_else(|| anyhow!("M10 canonical height missing"))? as u32;
+    let base_size = authority["parameters"]["wrapper"]["base_size"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("M10 base size missing"))? as u32;
+    ensure!(
+        base_size <= 4096,
+        "M10 base size exceeds the smoke safety bound"
+    );
+    let n = (w * h) as usize;
+    let canonical_n = (canonical_w * canonical_h) as usize;
+    let canonical_rgb_flat = read_m10_f32(&fixture.join("canonical-rgb.f32le"), canonical_n * 3)?;
+    let canonical_rgb = canonical_rgb_flat
+        .chunks_exact(3)
+        .map(|p| [p[0], p[1], p[2]])
+        .collect::<Vec<_>>();
+    let canonical_coarse_flat = read_m10_f32(&fixture.join("canonical-coarse.f32le"), canonical_n)?;
+    let source_trim_flat = read_m10_f32(&fixture.join("trimap.f32le"), n)?;
+    let source_coarse = read_m10_f32(&fixture.join("coarse-alpha.f32le"), n)?;
+    let constraints: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture.join("constraints.json"))?)?;
+    let expected_known = source_trim_flat
+        .iter()
+        .map(|v| i32::from(*v == 0.0 || *v == 1.0))
+        .collect::<Vec<_>>();
+    ensure!(
+        constraints["known"] == serde_json::json!(expected_known),
+        "M10 constraint evidence does not match trimap"
+    );
+    let canonical_image = bgremove_core::RgbImageF32::new(canonical_w, canonical_h, canonical_rgb)?;
+    let canonical_coarse =
+        bgremove_core::AlphaMask::new(canonical_w, canonical_h, canonical_coarse_flat)?;
+    let result = bgremove_matting::refine_backgroundremover_bounded(
+        &canonical_image,
+        &canonical_coarse,
+        &bgremove_matting::ClosedFormConfig {
+            base_size: Some(base_size),
+            ..Default::default()
+        },
+        RembgTrimapConfig {
+            foreground_threshold: authority["parameters"]["wrapper"]["foreground_threshold"]
+                .as_u64()
+                .ok_or_else(|| anyhow!("M10 foreground threshold missing"))?
+                as u8,
+            background_threshold: authority["parameters"]["wrapper"]["background_threshold"]
+                .as_u64()
+                .ok_or_else(|| anyhow!("M10 background threshold missing"))?
+                as u8,
+            erode_size: authority["parameters"]["wrapper"]["erode_structure_size"]
+                .as_u64()
+                .ok_or_else(|| anyhow!("M10 erosion size missing"))? as u32,
+        },
+    )?;
+    ensure!(
+        result.report.working_dimensions == (w, h),
+        "M10 bounded API working dimensions differ"
+    );
+    ensure!(
+        result.report.canonical_dimensions == (canonical_w, canonical_h),
+        "M10 bounded API canonical dimensions differ"
+    );
+    let working_rgb = result
+        .working_image
+        .data()
+        .iter()
+        .flat_map(|p| p.iter().copied())
+        .collect::<Vec<_>>();
+    let working_coarse = result.working_coarse.data().to_vec();
+    let working_trim = result
+        .working_trimap
+        .data()
+        .iter()
+        .map(|c| match c {
+            TrimapClass::Background => 0.0,
+            TrimapClass::Unknown => 0.5,
+            TrimapClass::Foreground => 1.0,
+        })
+        .collect::<Vec<_>>();
+    let working_alpha = result.working_alpha.data().to_vec();
+    let working_fg = result
+        .working_foreground
+        .data()
+        .iter()
+        .flat_map(|p| p.iter().copied())
+        .collect::<Vec<_>>();
+    let working_bg = result
+        .working_background
+        .data()
+        .iter()
+        .flat_map(|p| p.iter().copied())
+        .collect::<Vec<_>>();
+    let source_rgb = read_m10_f32(&fixture.join("decoded-rgb.f32le"), n * 3)?;
+    let working_rgb_diff = max_abs_diff(&working_rgb, &source_rgb)?;
+    let working_rgb_mean = mean_abs_diff(&working_rgb, &source_rgb)?;
+    let working_coarse_diff = max_abs_diff(&working_coarse, &source_coarse)?;
+    let working_coarse_mean = mean_abs_diff(&working_coarse, &source_coarse)?;
+    let working_trim_diff = max_abs_diff(&working_trim, &source_trim_flat)?;
+    let working_trim_mean = mean_abs_diff(&working_trim, &source_trim_flat)?;
+    ensure!(
+        f64::from(working_rgb_diff) <= resample_tolerance
+            && f64::from(working_coarse_diff) <= resample_tolerance
+            && working_trim_diff == 0.0,
+        "M10 bounded working-stage resize/trimap divergence exceeds declared tolerance"
+    );
+    let ref_work_alpha = read_m10_f32(&fixture.join("alpha.f32le"), n)?;
+    let ref_work_fg = read_m10_f32(&fixture.join("foreground.f32le"), n * 3)?;
+    let ref_work_bg = read_m10_f32(&fixture.join("background.f32le"), n * 3)?;
+    let working_alpha_diff = max_abs_diff(&working_alpha, &ref_work_alpha)?;
+    let working_fg_diff = max_abs_diff(&working_fg, &ref_work_fg)?;
+    let working_bg_diff = max_abs_diff(&working_bg, &ref_work_bg)?;
+    ensure!(
+        f64::from(working_alpha_diff) <= alpha_tolerance
+            && f64::from(working_fg_diff) <= foreground_tolerance
+            && f64::from(working_bg_diff) <= background_tolerance,
+        "M10 working matting stages exceed declared tolerances: alpha={working_alpha_diff}, fg={working_fg_diff}, bg={working_bg_diff}"
+    );
+    let source_laplacian: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture.join("laplacian.json"))?)?;
+    let source_entries = source_laplacian["triplets"]
+        .as_array()
+        .ok_or_else(|| anyhow!("invalid M10 Laplacian evidence"))?;
+    let mut source_map = BTreeMap::<(usize, usize), f64>::new();
+    for source in source_entries {
+        let sr = source[0]
+            .as_u64()
+            .ok_or_else(|| anyhow!("invalid source Laplacian row"))? as usize;
+        let sc = source[1]
+            .as_u64()
+            .ok_or_else(|| anyhow!("invalid source Laplacian column"))? as usize;
+        let sv = source[2]
+            .as_f64()
+            .ok_or_else(|| anyhow!("invalid source Laplacian value"))?;
+        *source_map.entry((sr, sc)).or_default() += sv;
+    }
+    source_map.retain(|_, value| value.abs() > 1e-15);
+    let rust_entries = result.laplacian.entries().collect::<Vec<_>>();
+    ensure!(
+        source_map.len() == rust_entries.len(),
+        "M10 Laplacian nnz differs from authority: rust={} source={}",
+        rust_entries.len(),
+        source_map.len()
+    );
+    let mut lap_diff = 0.0_f64;
+    for ((sr, sc), sv) in source_map {
+        let &(rr, cc, rv) = rust_entries
+            .iter()
+            .find(|(r, c, _)| *r == sr && *c == sc)
+            .ok_or_else(|| anyhow!("M10 Laplacian sparse coordinates differ from authority"))?;
+        ensure!(
+            sr == rr && sc == cc,
+            "M10 Laplacian sparse ordering differs from authority"
+        );
+        lap_diff = lap_diff.max((sv - rv).abs());
+    }
+    ensure!(
+        lap_diff <= lap_tolerance,
+        "M10 Laplacian differs from authority: {lap_diff} > {lap_tolerance}"
+    );
+    let ref_alpha = read_m10_f32(&fixture.join("restored-alpha.f32le"), canonical_n)?;
+    let ref_fg = read_m10_f32(&fixture.join("restored-foreground.f32le"), canonical_n * 3)?;
+    let ref_bg = read_m10_f32(&fixture.join("restored-background.f32le"), canonical_n * 3)?;
+    let rust_alpha = result.alpha.data().to_vec();
+    let rust_fg = result
+        .foreground
+        .data()
+        .iter()
+        .flat_map(|p| p.iter().copied())
+        .collect::<Vec<_>>();
+    let rust_bg = result
+        .background
+        .data()
+        .iter()
+        .flat_map(|p| p.iter().copied())
+        .collect::<Vec<_>>();
+    let analytic_w = authority["analytic"]["separate_case"]["width"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("M10 analytic width missing"))? as u32;
+    let analytic_h = authority["analytic"]["separate_case"]["height"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("M10 analytic height missing"))? as u32;
+    let analytic_n = (analytic_w * analytic_h) as usize;
+    let analytic_rgb = read_m10_f32(&fixture.join("analytic-image.f32le"), analytic_n * 3)?
+        .chunks_exact(3)
+        .map(|p| [p[0], p[1], p[2]])
+        .collect::<Vec<_>>();
+    let analytic_coarse = bgremove_core::AlphaMask::new(
+        analytic_w,
+        analytic_h,
+        read_m10_f32(&fixture.join("analytic-coarse-alpha.f32le"), analytic_n)?,
+    )?;
+    let analytic_trim_values = read_m10_f32(&fixture.join("analytic-trimap.f32le"), analytic_n)?;
+    let analytic_trim = bgremove_core::Trimap::new(
+        analytic_w,
+        analytic_h,
+        analytic_trim_values
+            .iter()
+            .map(|v| {
+                if *v <= 0.0 {
+                    TrimapClass::Background
+                } else if *v >= 1.0 {
+                    TrimapClass::Foreground
+                } else {
+                    TrimapClass::Unknown
+                }
+            })
+            .collect(),
+    )?;
+    let analytic_result = bgremove_matting::refine_closed_form_with_coarse(
+        &bgremove_core::RgbImageF32::new(analytic_w, analytic_h, analytic_rgb)?,
+        &analytic_coarse,
+        &analytic_trim,
+        &bgremove_matting::ClosedFormConfig::default(),
+    )?;
+    let analytic_true_alpha = read_m10_f32(&fixture.join("analytic-true-alpha.f32le"), analytic_n)?;
+    let analytic_true_fg = read_m10_f32(
+        &fixture.join("analytic-true-foreground.f32le"),
+        analytic_n * 3,
+    )?;
+    let analytic_true_bg = read_m10_f32(
+        &fixture.join("analytic-true-background.f32le"),
+        analytic_n * 3,
+    )?;
+    let analytic_alpha_values = analytic_result.alpha.data();
+    let analytic_fg_values = analytic_result
+        .foreground
+        .data()
+        .iter()
+        .flat_map(|p| p.iter().copied())
+        .collect::<Vec<_>>();
+    let analytic_bg_values = analytic_result
+        .background
+        .data()
+        .iter()
+        .flat_map(|p| p.iter().copied())
+        .collect::<Vec<_>>();
+    let analytic_alpha_max = max_abs_diff(analytic_alpha_values, &analytic_true_alpha)?;
+    let mut analytic_fg_weighted = 0.0_f32;
+    let mut analytic_fg_weight = 0.0_f32;
+    let mut composite_max = 0.0_f32;
+    for i in 0..analytic_n {
+        if analytic_true_alpha[i] > 0.0 {
+            analytic_fg_weight += analytic_true_alpha[i];
+            for c in 0..3 {
+                analytic_fg_weighted += analytic_true_alpha[i]
+                    * (analytic_fg_values[i * 3 + c] - analytic_true_fg[i * 3 + c]).abs();
+            }
+        }
+        for c in 0..3 {
+            let predicted = analytic_alpha_values[i] * analytic_fg_values[i * 3 + c]
+                + (1.0 - analytic_alpha_values[i]) * analytic_bg_values[i * 3 + c];
+            let expected = analytic_true_alpha[i] * analytic_true_fg[i * 3 + c]
+                + (1.0 - analytic_true_alpha[i]) * analytic_true_bg[i * 3 + c];
+            composite_max = composite_max.max((predicted - expected).abs());
+        }
+    }
+    let analytic_fg_weighted = analytic_fg_weighted / (analytic_fg_weight * 3.0).max(1e-12);
+    ensure!(f64::from(analytic_alpha_max) <= analytic_alpha_threshold && f64::from(analytic_fg_weighted) <= analytic_fg_threshold && f64::from(composite_max) <= analytic_composite_threshold, "M10 analytic composite gate failed: alpha={analytic_alpha_max}, foreground_weighted={analytic_fg_weighted}, composite={composite_max}");
+    let alpha_diff = max_abs_diff(&rust_alpha, &ref_alpha)?;
+    let fg_diff = max_abs_diff(&rust_fg, &ref_fg)?;
+    let bg_diff = max_abs_diff(&rust_bg, &ref_bg)?;
+    ensure!(f64::from(alpha_diff) <= alpha_tolerance && f64::from(fg_diff) <= foreground_tolerance && f64::from(bg_diff) <= background_tolerance, "M10 Rust/Python divergence exceeds declared tolerance (alpha={alpha_diff}, fg={fg_diff}, bg={bg_diff})");
+    let known: Vec<bool> = source_trim_flat
+        .iter()
+        .map(|v| *v == 0.0 || *v == 1.0)
+        .collect();
+    let forced_lap = bgremove_matting::build_closed_form_laplacian(
+        result.working_image.data(),
+        w,
+        h,
+        1e-7,
+        1,
+        Some(&known),
+        1_000_000,
+        50_000_000,
+        10_000_000,
+        512 * 1024 * 1024,
+    )?;
+    let forced_config = bgremove_matting::ClosedFormConfig {
+        max_iterations: 1,
+        ..Default::default()
+    };
+    let (forced_alpha, forced_report) = bgremove_matting::solve_constrained_alpha_with_coarse(
+        &forced_lap,
+        &source_trim_flat,
+        &source_coarse,
+        w,
+        h,
+        &forced_config,
+    )?;
+    ensure!(
+        forced_report.fallback_used,
+        "M10 forced low-iteration gate unexpectedly converged"
+    );
+    ensure!(
+        forced_alpha == source_coarse,
+        "M10 fallback did not return coarse alpha exactly"
+    );
+    let deg_image = vec![[0.2_f32, 0.3, 0.4]; 9];
+    let deg_known = vec![false; 9];
+    let deg_lap = bgremove_matting::build_closed_form_laplacian(
+        &deg_image,
+        3,
+        3,
+        1e-7,
+        1,
+        Some(&deg_known),
+        64,
+        10_000,
+        10_000,
+        10_000_000,
+    )?;
+    let deg_coarse = vec![0.37_f32; 9];
+    let (deg_alpha, deg_report) = bgremove_matting::solve_constrained_alpha_with_coarse(
+        &deg_lap,
+        &deg_coarse,
+        &deg_coarse,
+        3,
+        3,
+        &bgremove_matting::ClosedFormConfig::default(),
+    )?;
+    ensure!(
+        deg_report.fallback_used && deg_alpha == deg_coarse,
+        "M10 underconstrained case did not return exact coarse alpha"
+    );
+    let all_known_lap = bgremove_matting::build_closed_form_laplacian(
+        &[[0.2_f32, 0.3, 0.4]; 4],
+        2,
+        2,
+        1e-7,
+        1,
+        Some(&[true; 4]),
+        16,
+        10_000,
+        10_000,
+        10_000_000,
+    )?;
+    let (all_known_alpha, all_known_report) =
+        bgremove_matting::solve_constrained_alpha_with_coarse(
+            &all_known_lap,
+            &[0.0, 1.0, 0.0, 1.0],
+            &[0.37; 4],
+            2,
+            2,
+            &bgremove_matting::ClosedFormConfig::default(),
+        )?;
+    ensure!(
+        all_known_alpha == vec![0.0, 1.0, 0.0, 1.0] && !all_known_report.fallback_used,
+        "M10 all-known constraints were not enforced"
+    );
+    ensure!(
+        result.report.estimated_memory_bytes <= result.report.limits.max_memory_bytes,
+        "M10 estimated peak memory exceeds configured cap"
+    );
+    ensure!(
+        result.report.assembly_peak_estimated_bytes <= result.report.limits.max_memory_bytes
+            && result.report.solve_peak_estimated_bytes <= result.report.limits.max_memory_bytes
+            && result.report.estimated_memory_bytes
+                >= result
+                    .report
+                    .assembly_peak_estimated_bytes
+                    .max(result.report.solve_peak_estimated_bytes),
+        "M10 phase memory estimates exceed cap or overall peak is not conservative"
+    );
+    let png = encode_m10_rgba(&result.final_rgba)?;
+    let rust_rgba = image::load_from_memory(&png)?.to_rgba8();
+    let reference_rgba = image::ImageReader::open(fixture.join("chain-final-rgba.png"))?
+        .with_guessed_format()?
+        .decode()?
+        .to_rgba8();
+    let wrapper_rgba = image::ImageReader::open(fixture.join("final-rgba.png"))?
+        .with_guessed_format()?
+        .decode()?
+        .to_rgba8();
+    ensure!(
+        rust_rgba.dimensions() == reference_rgba.dimensions(),
+        "M10 final RGBA dimensions differ"
+    );
+    let final_diff = rust_rgba
+        .pixels()
+        .zip(reference_rgba.pixels())
+        .flat_map(|(a, b)| {
+            let visible = a[3].max(b[3]) > 8;
+            a.0.into_iter()
+                .zip(b.0)
+                .enumerate()
+                .filter_map(move |(channel, (x, y))| {
+                    (channel == 3 || visible).then_some(x.abs_diff(y))
+                })
+        })
+        .max()
+        .unwrap_or(0);
+    let wrapper_diff = rust_rgba
+        .pixels()
+        .zip(wrapper_rgba.pixels())
+        .flat_map(|(a, b)| a.0.into_iter().zip(b.0).map(|(x, y)| x.abs_diff(y)))
+        .max()
+        .unwrap_or(0);
+    ensure!(
+        final_diff <= final_tolerance,
+        "M10 visible final RGBA differs by more than declared tolerance: {final_diff}"
+    );
+    ensure!(
+        wrapper_diff <= final_tolerance,
+        "M10 Rust final RGBA differs from pinned wrapper: {wrapper_diff}"
+    );
+    fs::create_dir_all(output)?;
+    fs::write(output.join("final-rgba.png"), &png)?;
+    fs::write(
+        output.join("decoded-rgb.f32le"),
+        fs::read(fixture.join("canonical-rgb.f32le"))?,
+    )?;
+    fs::write(
+        output.join("working-rgb.f32le"),
+        working_rgb
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    )?;
+    fs::write(
+        output.join("working-coarse-alpha.f32le"),
+        working_coarse
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    )?;
+    fs::write(
+        output.join("working-trimap.f32le"),
+        working_trim
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    )?;
+    fs::write(
+        output.join("trimap.f32le"),
+        fs::read(fixture.join("canonical-trimap.f32le"))?,
+    )?;
+    fs::write(
+        output.join("alpha.f32le"),
+        rust_alpha
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    )?;
+    fs::write(
+        output.join("working-alpha.f32le"),
+        working_alpha
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    )?;
+    fs::write(
+        output.join("working-foreground.f32le"),
+        working_fg
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    )?;
+    fs::write(
+        output.join("working-background.f32le"),
+        working_bg
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    )?;
+    fs::write(
+        output.join("foreground.f32le"),
+        rust_fg
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    )?;
+    fs::write(
+        output.join("background.f32le"),
+        rust_bg
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    )?;
+    let report = serde_json::json!({
+        "schema":"bgremove.m10.smoke.v1", "source_execution":true,
+        "authority_report_sha256": hash_bytes(&fs::read(fixture.join("authoritative-report.json"))?),
+        "parity_sha256": hash_bytes(&fs::read(fixture.join("parity.json"))?),
+        "input":{"working_dimensions":[w,h],"canonical_dimensions":[canonical_w,canonical_h],"decoded_sha256":hash_bytes(&fs::read(output.join("decoded-rgb.f32le"))?),"trimap_sha256":hash_bytes(&fs::read(output.join("trimap.f32le"))?)},
+        "comparison":{"earliest_divergence":"none within declared tolerances","working_stage":{"rgb_max_abs":working_rgb_diff,"rgb_mean_abs":working_rgb_mean,"coarse_max_abs":working_coarse_diff,"coarse_mean_abs":working_coarse_mean,"trimap_max_abs":working_trim_diff,"trimap_mean_abs":working_trim_mean,"alpha_max_abs":working_alpha_diff,"foreground_max_abs":working_fg_diff,"background_max_abs":working_bg_diff},"laplacian_max_abs":lap_diff,"alpha_max_abs":alpha_diff,"foreground_max_abs":fg_diff,"background_max_abs":bg_diff,"final_rgba_max_abs":final_diff,"wrapper_final_rgba_max_abs":wrapper_diff,"tolerances":{"laplacian":lap_tolerance,"alpha":alpha_tolerance,"foreground":foreground_tolerance,"background":background_tolerance,"final_rgba":final_tolerance,"base_size_resample":resample_tolerance},"raw_alpha_no_cleanup":true},
+        "analytic_gate":{"true_alpha_max_abs":analytic_alpha_max,"alpha_weighted_foreground_mean_abs":analytic_fg_weighted,"composite_max_abs":composite_max,"thresholds":{"true_alpha":analytic_alpha_threshold,"visible_foreground":analytic_fg_threshold,"composite":analytic_composite_threshold},"hidden_rgb_under_zero_alpha_excluded":true},
+        "solver": {"status":format!("{:?}",result.report.status),"fallback_used":result.report.fallback_used,"fallback_reason":result.report.fallback_reason,"iterations":result.report.iterations,"absolute_residual":result.report.absolute_residual,"relative_residual":result.report.relative_residual,"sparse_nnz":result.report.sparse_nnz,"raw_assembly_entries":result.report.raw_assembly_entries,"assembly_peak_estimated_bytes":result.report.assembly_peak_estimated_bytes,"solve_peak_estimated_bytes":result.report.solve_peak_estimated_bytes,"estimated_memory_bytes":result.report.estimated_memory_bytes,"limits":{"tolerance":result.report.limits.tolerance,"max_iterations":result.report.limits.max_iterations,"max_pixels":result.report.limits.max_pixels,"max_nnz":result.report.limits.max_nnz,"max_assembly_entries":result.report.limits.max_assembly_entries,"max_memory_bytes":result.report.limits.max_memory_bytes},"working_dimensions":[w,h],"canonical_dimensions":[canonical_w,canonical_h]},
+        "forced_fallback":{"status":format!("{:?}",forced_report.status),"fallback_used":forced_report.fallback_used,"exact_coarse_alpha":forced_alpha == source_coarse,"iterations":forced_report.iterations,"absolute_residual":forced_report.absolute_residual,"relative_residual":forced_report.relative_residual},
+        "degenerate_cases":{"underconstrained":{"status":format!("{:?}",deg_report.status),"fallback_used":deg_report.fallback_used,"exact_coarse_alpha":deg_alpha == deg_coarse,"reason":deg_report.fallback_reason},"all_known":{"status":format!("{:?}",all_known_report.status),"fallback_used":all_known_report.fallback_used,"known_constraints_enforced":all_known_alpha == vec![0.0,1.0,0.0,1.0]}},
+        "artifacts":["decoded-rgb.f32le","working-rgb.f32le","working-coarse-alpha.f32le","working-trimap.f32le","trimap.f32le","working-alpha.f32le","working-foreground.f32le","working-background.f32le","alpha.f32le","foreground.f32le","background.f32le","final-rgba.png"]
     });
     fs::write(
         output.join("report.json"),
@@ -3294,6 +3945,227 @@ mod tests {
             if artifact["name"].as_str().unwrap().contains("trimap") {
                 assert!(artifact["unknown_fraction"].as_f64().unwrap() > 0.0);
             }
+        }
+    }
+
+    #[test]
+    fn m10_report_acceptance_catches_authority_tolerance_fallback_and_bounds() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join("runs/m10-matting/report.json")).unwrap(),
+        )
+        .unwrap();
+        let authority_path = root.join("tests/fixtures/m10/authoritative-report.json");
+        let parity_path = root.join("tests/fixtures/m10/reference/parity.json");
+        let authority_bytes = fs::read(&authority_path).unwrap();
+        let parity_bytes = fs::read(&parity_path).unwrap();
+        let authority: serde_json::Value = serde_json::from_slice(&authority_bytes).unwrap();
+        let parity: serde_json::Value = serde_json::from_slice(&parity_bytes).unwrap();
+        assert_eq!(report["schema"], "bgremove.m10.smoke.v1");
+        assert_eq!(report["source_execution"], true);
+        assert_eq!(
+            report["authority_report_sha256"],
+            hash_bytes(&authority_bytes)
+        );
+        assert_eq!(report["parity_sha256"], hash_bytes(&parity_bytes));
+        assert_eq!(
+            parity["authority_report"]["sha256"],
+            hash_bytes(&authority_bytes)
+        );
+        assert_eq!(report["forced_fallback"]["fallback_used"], true);
+        assert_eq!(report["forced_fallback"]["exact_coarse_alpha"], true);
+        assert_eq!(
+            report["degenerate_cases"]["underconstrained"]["fallback_used"],
+            true
+        );
+        assert_eq!(
+            report["degenerate_cases"]["underconstrained"]["exact_coarse_alpha"],
+            true
+        );
+        assert_eq!(
+            report["degenerate_cases"]["all_known"]["known_constraints_enforced"],
+            true
+        );
+        assert!(
+            report["forced_fallback"]["status"] == "MaxIterations"
+                || report["forced_fallback"]["status"] == "Breakdown"
+        );
+        assert_eq!(
+            report["input"]["working_dimensions"],
+            serde_json::json!([48, 33])
+        );
+        assert_eq!(
+            report["input"]["canonical_dimensions"],
+            serde_json::json!([65, 45])
+        );
+        assert!(report["comparison"]["tolerances"]
+            .as_object()
+            .unwrap()
+            .contains_key("laplacian"));
+        assert!(
+            report["comparison"]["working_stage"]["rgb_max_abs"]
+                .as_f64()
+                .unwrap()
+                <= 1e-7
+        );
+        assert!(report["comparison"]["working_stage"]["trimap_max_abs"] == 0.0);
+        assert!(report["comparison"]["tolerances"]
+            .as_object()
+            .unwrap()
+            .contains_key("base_size_resample"));
+        assert!(report["comparison"]["final_rgba_max_abs"].as_u64().unwrap() <= 1);
+        assert!(
+            report["comparison"]["wrapper_final_rgba_max_abs"]
+                .as_u64()
+                .unwrap()
+                <= 1
+        );
+        assert!(report["analytic_gate"]["thresholds"]
+            .as_object()
+            .unwrap()
+            .contains_key("composite"));
+        assert!(
+            report["analytic_gate"]["true_alpha_max_abs"]
+                .as_f64()
+                .unwrap()
+                <= 0.02
+        );
+        assert!(
+            report["analytic_gate"]["alpha_weighted_foreground_mean_abs"]
+                .as_f64()
+                .unwrap()
+                <= 0.02
+        );
+        assert!(
+            report["solver"]["limits"]["max_iterations"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(report["solver"]["estimated_memory_bytes"].as_u64().unwrap() > 0);
+        assert!(
+            report["solver"]["estimated_memory_bytes"].as_u64().unwrap()
+                <= report["solver"]["limits"]["max_memory_bytes"]
+                    .as_u64()
+                    .unwrap()
+        );
+        assert_eq!(
+            report["solver"]["raw_assembly_entries"],
+            serde_json::json!(115506)
+        );
+        assert!(
+            report["solver"]["assembly_peak_estimated_bytes"]
+                .as_u64()
+                .unwrap()
+                <= report["solver"]["limits"]["max_memory_bytes"]
+                    .as_u64()
+                    .unwrap()
+        );
+        assert!(
+            report["solver"]["solve_peak_estimated_bytes"]
+                .as_u64()
+                .unwrap()
+                <= report["solver"]["limits"]["max_memory_bytes"]
+                    .as_u64()
+                    .unwrap()
+        );
+        assert!(
+            report["solver"]["estimated_memory_bytes"].as_u64().unwrap()
+                >= report["solver"]["assembly_peak_estimated_bytes"]
+                    .as_u64()
+                    .unwrap()
+                && report["solver"]["estimated_memory_bytes"].as_u64().unwrap()
+                    >= report["solver"]["solve_peak_estimated_bytes"]
+                        .as_u64()
+                        .unwrap()
+        );
+        assert_eq!(authority["authoritative_sources_executed"], true);
+        assert_eq!(
+            authority["stage_chain"],
+            serde_json::json!({"connected":true,"decoded_to_working":true,"final_from_captured_stages":true,"wrapper_final_matches_chain":true})
+        );
+        assert_eq!(
+            authority["source"]["backgroundremover_commit"],
+            "fa480627829759b902f8c233388d7aa67ab38099"
+        );
+        assert_eq!(
+            authority["parameters"]["wrapper"]["working_dimensions"],
+            serde_json::json!([48, 33])
+        );
+        assert_eq!(
+            authority["parameters"]["wrapper"]["canonical_dimensions"],
+            serde_json::json!([65, 45])
+        );
+        assert_eq!(
+            authority["source"]["backgroundremover_bg_py_sha256"],
+            "4ab631a8f2df06fabd4b05fc36894057ba93f0fd1250b4c60d2bdbe775936047"
+        );
+        assert_eq!(authority["source"]["python_runtime"]["python"], "3.12.11");
+        assert_eq!(authority["source"]["python_runtime"]["pymatting"], "1.1.15");
+        assert_eq!(authority["source"]["python_runtime"]["numpy"], "2.3.2");
+        assert_eq!(authority["source"]["python_runtime"]["pillow"], "12.2.0");
+        assert_eq!(authority["source"]["python_runtime"]["scipy"], "1.17.0");
+        assert_eq!(authority["source"]["network_downloads"], false);
+        assert_eq!(
+            authority["source"]["license_artifact"]["sha256"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
+        for (_, source_file) in authority["source"]["pymatting_source_files"]
+            .as_object()
+            .unwrap()
+        {
+            assert_eq!(source_file["sha256"].as_str().unwrap().len(), 64);
+        }
+        for (_, stage) in authority["stages"].as_object().unwrap() {
+            let path = root
+                .join("tests/fixtures/m10/reference")
+                .join(stage["path"].as_str().unwrap());
+            assert_eq!(stage["sha256"], hash_bytes(&fs::read(path).unwrap()));
+        }
+        for (_, artifact) in parity["artifacts"].as_object().unwrap() {
+            let relative = artifact["path"].as_str().unwrap();
+            let relative_path = Path::new(relative);
+            assert!(!relative_path.is_absolute());
+            assert!(!relative_path
+                .components()
+                .any(|component| component == std::path::Component::ParentDir));
+            let bytes = fs::read(
+                root.join("tests/fixtures/m10/reference")
+                    .join(relative_path),
+            )
+            .unwrap();
+            assert_eq!(artifact["bytes"].as_u64(), Some(bytes.len() as u64));
+            assert_eq!(artifact["sha256"], hash_bytes(&bytes));
+        }
+        let profile_tolerances = &parity["profiles"][0]["tolerances"];
+        assert_eq!(
+            report["comparison"]["tolerances"]["laplacian"],
+            profile_tolerances["laplacian"]
+        );
+        assert_eq!(
+            report["comparison"]["tolerances"]["alpha"],
+            profile_tolerances["alpha"]
+        );
+        assert_eq!(
+            report["comparison"]["tolerances"]["foreground"],
+            profile_tolerances["foreground"]
+        );
+        assert_eq!(
+            report["analytic_gate"]["thresholds"],
+            parity["analytic_thresholds"]
+        );
+        for key in [
+            "max_pixels",
+            "max_sparse_nnz",
+            "max_assembly_entries",
+            "max_memory_bytes",
+            "max_iterations",
+            "max_working_dimension",
+        ] {
+            assert!(authority["resource_limits"][key].as_u64().unwrap() > 0);
         }
     }
 
