@@ -1,0 +1,6 @@
+This file describes the checked-in M12 synthetic ONNX fixture.
+
+It is generated from tests/fixtures/m12/generate_vitmatte_fixture.py solely
+for deterministic offline adapter tests. It is not a copy of, or a grant for,
+any real ViTMatte checkpoint. The fixture and generator may be used under the
+workspace MIT OR Apache-2.0 license.

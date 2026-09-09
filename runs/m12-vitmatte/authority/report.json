@@ -1,0 +1,93 @@
+{
+  "authority_artifacts": {
+    "authority-input.f32le": {
+      "bytes": 16777216,
+      "sha256": "74e6783cc7b96685f93d19fb5c6758dcf561e7b18749c33de29efbae750f4761"
+    },
+    "authority-output.f32le": {
+      "bytes": 4194304,
+      "sha256": "bfc3452702094b272f743e45b3b871aeaaa120e5cc4c14748e557feb75732086"
+    },
+    "image.u8": {
+      "bytes": 351,
+      "sha256": "e289910e51ced33f8e5d9e4b4b354a9eee6f48d5fbd4edd6da2f04f0fd721a0a"
+    },
+    "mask.u8": {
+      "bytes": 117,
+      "sha256": "47181dcde8ecdc6508775665fce22678b8e16d8bd77991e5ff9c4383a55effd2"
+    },
+    "restored-alpha.u8": {
+      "bytes": 117,
+      "sha256": "90096decf7348a2bac4ae4de77c2cdf04e14d8208b52326ee2b1477b5167e5e8"
+    },
+    "trimap.u8": {
+      "bytes": 117,
+      "sha256": "47181dcde8ecdc6508775665fce22678b8e16d8bd77991e5ff9c4383a55effd2"
+    }
+  },
+  "contract": {
+    "input": [
+      1,
+      4,
+      1024,
+      1024
+    ],
+    "normalization": "none",
+    "output": [
+      1,
+      1,
+      1024,
+      1024
+    ],
+    "rgb": "Pillow bilinear / 255",
+    "trimap": "Pillow nearest / 255"
+  },
+  "model": {
+    "bytes": 2840,
+    "path": "models/fixtures/vitmatte_synthetic.onnx",
+    "sha256": "114b5870dd444275958dadf739b60ad7aa452084830559d0021f757e41e43d5b"
+  },
+  "network_downloads": false,
+  "real_checkpoint_executed": false,
+  "runtime": {
+    "numpy": "2.3.2",
+    "onnxruntime": "1.23.2",
+    "pillow": "12.2.0",
+    "python": "3.12.11",
+    "scipy": "1.17.0",
+    "torch": "2.9.1"
+  },
+  "schema": "m12.vitmatte-authoritative.v1",
+  "source": {
+    "commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+    "file": "projects/python/rembg/rembg/matting.py",
+    "license": {
+      "path": "projects/python/rembg/LICENSE.txt",
+      "sha256": "90a3215072968fd304669c5389f04f1274a587abdd0507d99dead0f5511f8999"
+    },
+    "network_downloads": false,
+    "relevant_files_sha256": "4aa6ed416671601a2000b7075018d68b265f7ddbff54dceb03f555fdc6c6244c",
+    "repository": "projects/python/rembg",
+    "sha256": "e86b7e608354abd24499f64ef98edfd0e29d66b65dbc3995e46220bdcfd833e1",
+    "tracked_source_clean": true
+  },
+  "source_execution": true,
+  "variants": {
+    "base-composition-1k": {
+      "fname": "vitmatte-base-composition-1k.onnx",
+      "sha256": "87bb10979f816061497ba6867b338c65a05cebd7d1507f6dde92a86382dec1f2"
+    },
+    "base-distinctions-646": {
+      "fname": "vitmatte-base-distinctions-646.onnx",
+      "sha256": "d30190833269c1bec3e37319fe67af151028d3be32f6f60f6663a51b209cc8c1"
+    },
+    "small-composition-1k": {
+      "fname": "vitmatte-small-composition-1k.onnx",
+      "sha256": "659b9bb2870f80cffbe20dae4c7f18417fbdf68c0195861d24e9082c28373a24"
+    },
+    "small-distinctions-646": {
+      "fname": "vitmatte-small-distinctions-646.onnx",
+      "sha256": "d232841ac9d9657df3e62f6c92ed425ee25df18d337245cd8b903fc1ba183631"
+    }
+  }
+}

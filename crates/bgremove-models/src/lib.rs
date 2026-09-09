@@ -35,6 +35,7 @@ pub enum ModelEncoding {
 string_enum!(PreprocessingProfile {
     ImglyIsnet => "imgly-isnet",
     RembgDis => "rembg-dis",
+    VitMatte => "vitmatte",
     RmbgRust => "rmbg-rust",
     RembgBria => "rembg-bria",
     Generic => "generic",
@@ -99,6 +100,7 @@ impl PreprocessingProfileManifest {
                 "rembg DIS profile contract mismatch"
             ),
             PreprocessingProfile::Generic
+            | PreprocessingProfile::VitMatte
             | PreprocessingProfile::RmbgRust
             | PreprocessingProfile::RembgBria
             | PreprocessingProfile::CarveKitFba => bail!("profile is not an M4 profile"),
@@ -252,16 +254,29 @@ impl ModelManifest {
                 workspace.join("projects/python/image-background-remove-tool")
             }
             ("fba", _) => workspace.join("projects/python/image-background-remove-tool"),
+            ("vitmatte", _) => workspace.join("projects/python/rembg"),
             _ => workspace.join("projects/javascript/background-removal-js"),
         };
         let allowed = match kind {
-            "license" if matches!(self.algorithm_family.as_str(), "birefnet" | "rmbg" | "fba") => {
+            "license"
+                if matches!(
+                    self.algorithm_family.as_str(),
+                    "birefnet" | "rmbg" | "fba" | "vitmatte"
+                ) =>
+            {
                 workspace.to_path_buf()
             }
             "model"
                 if matches!(
                     self.algorithm_family.as_str(),
-                    "u2net" | "birefnet" | "rmbg" | "basnet" | "deeplabv3" | "tracer-b7" | "fba"
+                    "u2net"
+                        | "birefnet"
+                        | "rmbg"
+                        | "basnet"
+                        | "deeplabv3"
+                        | "tracer-b7"
+                        | "fba"
+                        | "vitmatte"
                 ) =>
             {
                 root.clone()
@@ -400,6 +415,42 @@ impl ModelManifest {
             self.std.iter().all(|v| *v > 0.0),
             "model std must be positive"
         );
+        if self.preprocessing_profile == PreprocessingProfile::VitMatte {
+            ensure!(
+                self.algorithm_family == "vitmatte"
+                    && self.input_name == "pixel_values"
+                    && self.output_name == "alphas"
+                    && self.layout == ModelLayout::Nchw
+                    && self.aspect == AspectPolicy::Stretch
+                    && self.resize_filter == ResizeFilter::Bilinear
+                    && self.channel_order == ChannelOrder::Rgb
+                    && self.scale == 1.0
+                    && self.mean == [0.0; 3]
+                    && self.std == [1.0; 3]
+                    && self.activation == Activation::None
+                    && self.output_normalization == OutputNormalization::Clamp
+                    && self.input_type == Some(TensorElementType::F32)
+                    && self.output_type == Some(TensorElementType::F32)
+                    && self.auxiliary_input_names.is_empty()
+                    && self.auxiliary_input_shapes.is_empty()
+                    && self.output_index == Some(0)
+                    && self.input_shape
+                        == vec![
+                            DimensionSpec::Static(1),
+                            DimensionSpec::Static(4),
+                            DimensionSpec::Static(1024),
+                            DimensionSpec::Static(1024),
+                        ]
+                    && self.output_shape
+                        == vec![
+                            DimensionSpec::Static(1),
+                            DimensionSpec::Static(1),
+                            DimensionSpec::Static(1024),
+                            DimensionSpec::Static(1024),
+                        ],
+                "ViTMatte preprocessing profile contract mismatch"
+            );
+        }
         if let Some(index) = self.output_index {
             ensure!(index < 1024, "model output index is unreasonably large");
         }
@@ -803,6 +854,22 @@ mod tests {
         assert_eq!(external_1024.width, 1024);
         assert_eq!(external_1024.input_shape[2], DimensionSpec::Static(1024));
         assert_eq!(external_1024.output_shape[2], DimensionSpec::Static(1024));
+    }
+
+    #[test]
+    fn m12_external_checkpoint_license_metadata_reaches_workspace_allowlist() {
+        let path = std::path::Path::new("../../models/m12_vitmatte_small_distinctions.toml");
+        let mut manifest = parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap();
+        manifest.intended_use_approved = true;
+        let error = manifest.verify_model_hash(path).unwrap_err().to_string();
+        assert!(
+            !error.contains("license resolves outside manifest directory"),
+            "workspace-level ViTMatte licence metadata was rejected before model resolution: {error}"
+        );
+        assert!(
+            error.contains("No such file") || error.contains("cannot canonicalize"),
+            "test must reach the absent external checkpoint after licence validation: {error}"
+        );
     }
 
     #[test]

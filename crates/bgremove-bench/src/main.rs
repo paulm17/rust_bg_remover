@@ -8,7 +8,7 @@ use bgremove_matting::{
     carvekit_probability_trimap, rembg_post_process, rembg_symmetric_trimap, CarveKitTrimapConfig,
     IdentityMaskTransform, RembgTrimapConfig, TrimapClass,
 };
-use bgremove_ort::{fba_fusion, fba_preprocess, TensorOutput};
+use bgremove_ort::{fba_fusion, fba_preprocess, TensorOutput, VitMatteRefiner, VitMatteVariant};
 use clap::{Parser, Subcommand};
 use image::codecs::png::PngEncoder;
 use image::{ColorType, GenericImageView, ImageDecoder, ImageEncoder, ImageReader};
@@ -214,6 +214,12 @@ enum Command {
     /// emit the deterministic Rust preprocessing/fusion evidence.
     M11Smoke {
         #[arg(long, default_value = "runs/m11-fba")]
+        output: PathBuf,
+    },
+    /// Validate all four ViTMatte registrations and, when ORT_DYLIB is
+    /// supplied, execute the checked-in synthetic four-channel graph.
+    M12Smoke {
+        #[arg(long, default_value = "runs/m12-vitmatte")]
         output: PathBuf,
     },
 }
@@ -512,6 +518,7 @@ fn main() -> Result<()> {
         Command::M9Smoke { output } => write_m9_smoke(&output)?,
         Command::M10Smoke { output } => write_m10_smoke(&output)?,
         Command::M11Smoke { output } => write_m11_smoke(&output)?,
+        Command::M12Smoke { output } => write_m12_smoke(&output)?,
     }
     Ok(())
 }
@@ -2541,6 +2548,252 @@ fn write_m11_smoke(output: &Path) -> Result<()> {
         "candidates": {"alpha_only": {"status": "executed", "background_alpha_zero": alpha_only.iter().zip(&trimap).filter(|(a,m)| **m == 0 && **a == 0.0).count() as f32 / bg_count == 1.0, "known_foreground_positive_fraction": alpha_fg_fraction}, "full_fba": {"status": "executed", "known_background_exact_zero_fraction": full_bg_fraction, "known_foreground_exact_one_fraction": full_fg_fraction, "alpha_channels": 1, "foreground_channels": 3, "background_channels": 3}},
         "checkpoint_gate": {"status": "excluded-license-unavailable", "real_1024_executed": false, "real_2048_executed": false, "weights_downloaded": false},
         "artifacts": output_artifacts
+    });
+    fs::write(
+        output.join("report.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    Ok(())
+}
+
+fn write_m12_smoke(output: &Path) -> Result<()> {
+    let authority_dir = Path::new("runs/m12-vitmatte/authority");
+    let authority_report_path = authority_dir.join("report.json");
+    let authority_bytes = fs::read(&authority_report_path).with_context(|| {
+        format!(
+            "read tracked M12 authority report {}; run the pinned Python authority first",
+            authority_report_path.display()
+        )
+    })?;
+    let authority: serde_json::Value = serde_json::from_slice(&authority_bytes)?;
+    ensure!(
+        authority["schema"] == "m12.vitmatte-authoritative.v1"
+            && authority["source_execution"] == true
+            && authority["real_checkpoint_executed"] == false
+            && authority["network_downloads"] == false,
+        "M12 authority report is not a truthful source-executed offline report"
+    );
+    ensure!(
+        authority["source"]["commit"] == "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709"
+            && authority["source"]["sha256"]
+                == "e86b7e608354abd24499f64ef98edfd0e29d66b65dbc3995e46220bdcfd833e1"
+            && authority["source"]["relevant_files_sha256"]
+                == "4aa6ed416671601a2000b7075018d68b265f7ddbff54dceb03f555fdc6c6244c"
+            && authority["source"]["license"]["sha256"]
+                == "90a3215072968fd304669c5389f04f1274a587abdd0507d99dead0f5511f8999",
+        "M12 authority source or licence provenance drifted"
+    );
+    let artifact_names = [
+        "image.u8",
+        "mask.u8",
+        "trimap.u8",
+        "authority-input.f32le",
+        "authority-output.f32le",
+        "restored-alpha.u8",
+    ];
+    for name in artifact_names {
+        let metadata = &authority["authority_artifacts"][name];
+        ensure!(
+            metadata["path"].is_null(),
+            "authority artifact metadata is unexpected"
+        );
+        let bytes = fs::read(authority_dir.join(name))?;
+        ensure!(
+            metadata["bytes"] == bytes.len() && metadata["sha256"] == sha256_hex(&bytes),
+            "M12 authority artifact hash/length mismatch for {name}"
+        );
+    }
+    ensure!(
+        authority["model"]["sha256"]
+            == "114b5870dd444275958dadf739b60ad7aa452084830559d0021f757e41e43d5b"
+            && authority["contract"]["input"] == serde_json::json!([1, 4, 1024, 1024])
+            && authority["contract"]["output"] == serde_json::json!([1, 1, 1024, 1024]),
+        "M12 authority synthetic model or tensor contract drifted"
+    );
+    let registry_paths = [
+        (
+            "small-distinctions-646",
+            "models/m12_vitmatte_small_distinctions.toml",
+        ),
+        (
+            "small-composition-1k",
+            "models/m12_vitmatte_small_composition.toml",
+        ),
+        (
+            "base-distinctions-646",
+            "models/m12_vitmatte_base_distinctions.toml",
+        ),
+        (
+            "base-composition-1k",
+            "models/m12_vitmatte_base_composition.toml",
+        ),
+    ];
+    let registry = registry_paths
+        .into_iter()
+        .map(|(variant, path)| {
+            let text = fs::read_to_string(path)?;
+            let manifest = bgremove_models::parse_toml(&text)?;
+            ensure!(
+                authority["variants"][variant]["fname"]
+                    == manifest.file.rsplit('/').next().unwrap_or_default()
+                    && authority["variants"][variant]["sha256"] == manifest.sha256,
+                "M12 manifest {variant} does not match the source-executed rembg registry"
+            );
+            Ok::<_, anyhow::Error>(serde_json::json!({
+                "variant": variant,
+                "id": manifest.id,
+                "model_sha256": manifest.sha256,
+                "source_commit": manifest.source_commit,
+                "source_relevant_files_sha256": manifest.source_relevant_files_sha256,
+                "license": manifest.license_identifier,
+                "available": manifest.verify_model_hash(Path::new(path)).is_ok(),
+                "manifest_sha256": sha256_hex(text.as_bytes()),
+            }))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut runtime = serde_json::json!({
+        "status": "contract-parity-pass",
+        "real_checkpoint_executed": false,
+        "tensor_sha256": null,
+        "raw_output_sha256": null,
+        "restored_alpha_sha256": null,
+        "provider": null,
+        "note": "Real four variants remain unapproved; edge/resource metrics are unavailable and no network download is attempted.",
+        "edge_category_metrics": null,
+        "resource_metrics": null
+    });
+    if let Some(runtime_path) = std::env::var_os("ORT_DYLIB") {
+        let manifest_path = Path::new("models/m12_vitmatte_synthetic.toml");
+        let manifest = bgremove_models::parse_toml(&fs::read_to_string(manifest_path)?)?;
+        let image_bytes = fs::read(authority_dir.join("image.u8"))?;
+        ensure!(
+            image_bytes.len() == 13 * 9 * 3,
+            "M12 authority image dimensions drifted"
+        );
+        let image = bgremove_core::CanonicalImage::new(
+            13,
+            9,
+            image_bytes
+                .chunks_exact(3)
+                .map(|pixel| {
+                    [
+                        pixel[0] as f32 / 255.0,
+                        pixel[1] as f32 / 255.0,
+                        pixel[2] as f32 / 255.0,
+                    ]
+                })
+                .collect(),
+        )?;
+        let trimap_bytes = fs::read(authority_dir.join("trimap.u8"))?;
+        ensure!(
+            trimap_bytes.len() == 13 * 9,
+            "M12 authority trimap dimensions drifted"
+        );
+        let authority_trimap = bgremove_core::Trimap::new(
+            13,
+            9,
+            trimap_bytes
+                .iter()
+                .map(|value| match value {
+                    0 => TrimapClass::Background,
+                    128 => TrimapClass::Unknown,
+                    255 => TrimapClass::Foreground,
+                    other => panic!("invalid authority trimap value {other}"),
+                })
+                .collect(),
+        )?;
+        let mask_bytes = fs::read(authority_dir.join("mask.u8"))?;
+        let trimap = rembg_symmetric_trimap(
+            &mask_bytes,
+            13,
+            9,
+            RembgTrimapConfig {
+                foreground_threshold: 240,
+                background_threshold: 10,
+                erode_size: 1,
+            },
+        )?;
+        ensure!(
+            trimap == authority_trimap,
+            "Rust M9 rembg trimap differs from source-executed matting.py trimap"
+        );
+        let mut refiner = VitMatteRefiner::new(
+            &manifest,
+            manifest_path,
+            Path::new(&runtime_path),
+            VitMatteVariant::SyntheticContract,
+            bgremove_ort::RequestedProvider::Cpu,
+            false,
+        )?;
+        let evidence = refiner.predict_with_evidence(&image, &trimap)?;
+        let restored_bytes: Vec<u8> = evidence
+            .restored
+            .data()
+            .iter()
+            .map(|value| (value * 255.0).round() as u8)
+            .collect();
+        let authority_input_sha = authority["authority_artifacts"]["authority-input.f32le"]
+            ["sha256"]
+            .as_str()
+            .unwrap();
+        let authority_output_sha = authority["authority_artifacts"]["authority-output.f32le"]
+            ["sha256"]
+            .as_str()
+            .unwrap();
+        let authority_alpha_sha = authority["authority_artifacts"]["restored-alpha.u8"]["sha256"]
+            .as_str()
+            .unwrap();
+        ensure!(
+            hash_f32_values(&evidence.tensor.values) == authority_input_sha
+                && hash_f32_values(&evidence.raw_output.values) == authority_output_sha
+                && sha256_hex(&restored_bytes) == authority_alpha_sha
+                && evidence.tensor.shape == vec![1, 4, 1024, 1024]
+                && evidence.raw_output.shape == vec![1, 1, 1024, 1024],
+            "Rust ViTMatte input/raw/restored alpha differs from source authority"
+        );
+        runtime = serde_json::json!({
+            "status": "contract-parity-pass",
+            "real_checkpoint_executed": false,
+            "synthetic_checkpoint_executed": true,
+            "tensor_sha256": hash_f32_values(&evidence.tensor.values),
+            "raw_output_sha256": hash_f32_values(&evidence.raw_output.values),
+            "restored_alpha_sha256": sha256_hex(&restored_bytes),
+            "input_shape": evidence.tensor.shape,
+            "output_shape": evidence.raw_output.shape,
+            "provider": refiner.provider(),
+            "authority_match": true,
+            "edge_category_metrics": null,
+            "resource_metrics": null,
+            "source": {"repository":"projects/python/rembg", "commit":"030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709", "contract":"source-executed Pillow bilinear RGB + nearest trimap; fixed 1024; alpha-only"}
+        });
+    }
+    let resource_contract = serde_json::json!({
+        "fixed_input_tensor_bytes": 16_777_216_u64,
+        "fixed_output_tensor_bytes": 4_194_304_u64,
+        "synthetic_model_bytes": authority["model"]["bytes"],
+        "adapter_buffers": {
+            "authority_input_bytes": authority["authority_artifacts"]["authority-input.f32le"]["bytes"],
+            "authority_output_bytes": authority["authority_artifacts"]["authority-output.f32le"]["bytes"],
+            "restored_alpha_bytes": authority["authority_artifacts"]["restored-alpha.u8"]["bytes"]
+        },
+        "real_checkpoint_metrics": null,
+        "note": "Deterministic tensor/model/buffer sizes only; synthetic sizes are not four-variant quality, latency, RSS, or checkpoint-resource comparison."
+    });
+    fs::create_dir_all(output)?;
+    let report = serde_json::json!({
+        "schema": "m12.vitmatte-benchmark.v1",
+        "status": "contract-pass-real-comparison-unavailable",
+        "contract_status": "pass",
+        "real_comparison_status": "unavailable-unapproved-checkpoints",
+        "default_variant": null,
+        "default_selection": "unselected-until-four-variant-edge-and-resource-validation",
+        "source_default_variant": "small-distinctions-646",
+        "authority_report_sha256": sha256_hex(&authority_bytes),
+        "registry": registry,
+        "runtime": runtime,
+        "resource_contract": resource_contract,
+        "comparison": {"status": "unavailable-unapproved-checkpoints", "required_metrics": ["edge-category alpha metrics", "cold-start", "steady-state latency", "peak resident memory", "checkpoint bytes"], "selection_rule": "never aggregate alpha IoU alone", "real_variant_runs": false, "unavailable_reason": "all four real checkpoints are unapproved in this workspace"},
+        "gates": {"fixed_input": [1,4,1024,1024], "fixed_output": [1,1,1024,1024], "rgb_resize": "pillow-bilinear", "trimap_resize": "pillow-nearest", "normalized_range": [0.0,1.0], "mean_std_transform": false, "alpha_only": true, "network_downloads": false, "invalid_or_unapproved_weights_fail_closed": true}
     });
     fs::write(
         output.join("report.json"),
@@ -4777,6 +5030,110 @@ mod tests {
             let bytes = fs::read(path).unwrap();
             assert_eq!(metadata["bytes"], bytes.len());
             assert_eq!(metadata["sha256"], sha256_hex(&bytes));
+        }
+    }
+
+    #[test]
+    fn m12_report_acceptance_requires_source_authority_and_full_artifact_hashes() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join("runs/m12-vitmatte/report.json")).unwrap(),
+        )
+        .unwrap();
+        let authority_path = root.join("runs/m12-vitmatte/authority/report.json");
+        let authority_bytes = fs::read(&authority_path).unwrap();
+        let authority: serde_json::Value = serde_json::from_slice(&authority_bytes).unwrap();
+        assert_eq!(report["schema"], "m12.vitmatte-benchmark.v1");
+        assert_eq!(
+            report["status"],
+            "contract-pass-real-comparison-unavailable"
+        );
+        assert_eq!(report["contract_status"], "pass");
+        assert_eq!(
+            report["real_comparison_status"],
+            "unavailable-unapproved-checkpoints"
+        );
+        assert_eq!(
+            report["comparison"]["status"],
+            "unavailable-unapproved-checkpoints"
+        );
+        assert_eq!(report["comparison"]["real_variant_runs"], false);
+        assert_eq!(
+            report["authority_report_sha256"],
+            sha256_hex(&authority_bytes)
+        );
+        assert_eq!(authority["source_execution"], true);
+        assert_eq!(authority["network_downloads"], false);
+        assert_eq!(authority["real_checkpoint_executed"], false);
+        assert_eq!(
+            authority["source"]["relevant_files_sha256"],
+            "4aa6ed416671601a2000b7075018d68b265f7ddbff54dceb03f555fdc6c6244c"
+        );
+        for (name, version) in [
+            ("python", "3.12.11"),
+            ("onnxruntime", "1.23.2"),
+            ("numpy", "2.3.2"),
+            ("pillow", "12.2.0"),
+            ("scipy", "1.17.0"),
+            ("torch", "2.9.1"),
+        ] {
+            assert_eq!(authority["runtime"][name], version);
+        }
+        assert_eq!(report["runtime"]["authority_match"], true);
+        assert!(report["runtime"]["edge_category_metrics"].is_null());
+        assert!(report["runtime"]["resource_metrics"].is_null());
+        assert_eq!(
+            report["resource_contract"]["fixed_input_tensor_bytes"],
+            16_777_216
+        );
+        assert_eq!(
+            report["resource_contract"]["fixed_output_tensor_bytes"],
+            4_194_304
+        );
+        assert_eq!(report["resource_contract"]["synthetic_model_bytes"], 2_840);
+        assert!(report["resource_contract"]["real_checkpoint_metrics"].is_null());
+        for name in [
+            "image.u8",
+            "mask.u8",
+            "trimap.u8",
+            "authority-input.f32le",
+            "authority-output.f32le",
+            "restored-alpha.u8",
+        ] {
+            let metadata = &authority["authority_artifacts"][name];
+            let bytes = fs::read(root.join("runs/m12-vitmatte/authority").join(name)).unwrap();
+            assert_eq!(metadata["bytes"], bytes.len());
+            assert_eq!(metadata["sha256"], sha256_hex(&bytes));
+        }
+        let expected = [
+            (
+                "small-distinctions-646",
+                "d232841ac9d9657df3e62f6c92ed425ee25df18d337245cd8b903fc1ba183631",
+            ),
+            (
+                "small-composition-1k",
+                "659b9bb2870f80cffbe20dae4c7f18417fbdf68c0195861d24e9082c28373a24",
+            ),
+            (
+                "base-distinctions-646",
+                "d30190833269c1bec3e37319fe67af151028d3be32f6f60f6663a51b209cc8c1",
+            ),
+            (
+                "base-composition-1k",
+                "87bb10979f816061497ba6867b338c65a05cebd7d1507f6dde92a86382dec1f2",
+            ),
+        ];
+        for (variant, digest) in expected {
+            assert_eq!(authority["variants"][variant]["sha256"], digest);
+            assert_eq!(
+                report["registry"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|entry| entry["variant"] == variant)
+                    .unwrap()["model_sha256"],
+                digest
+            );
         }
     }
 

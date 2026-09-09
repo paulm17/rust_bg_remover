@@ -25,6 +25,10 @@
 !/runs/m10-matting/*
 !/runs/m11-fba/
 !/runs/m11-fba/*
+!/runs/m12-vitmatte/
+!/runs/m12-vitmatte/report.json
+!/runs/m12-vitmatte/authority/
+!/runs/m12-vitmatte/authority/*
 /models/*.onnx
 /models/*.ort
 !/models/fixtures/

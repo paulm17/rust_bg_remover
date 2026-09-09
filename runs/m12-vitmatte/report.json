@@ -1,0 +1,139 @@
+{
+  "authority_report_sha256": "7b5eac0210c661fdad35b3d0e905dc49ccdfc67688cd33f735857d45e88f1e87",
+  "comparison": {
+    "real_variant_runs": false,
+    "required_metrics": [
+      "edge-category alpha metrics",
+      "cold-start",
+      "steady-state latency",
+      "peak resident memory",
+      "checkpoint bytes"
+    ],
+    "selection_rule": "never aggregate alpha IoU alone",
+    "status": "unavailable-unapproved-checkpoints",
+    "unavailable_reason": "all four real checkpoints are unapproved in this workspace"
+  },
+  "contract_status": "pass",
+  "default_selection": "unselected-until-four-variant-edge-and-resource-validation",
+  "default_variant": null,
+  "gates": {
+    "alpha_only": true,
+    "fixed_input": [
+      1,
+      4,
+      1024,
+      1024
+    ],
+    "fixed_output": [
+      1,
+      1,
+      1024,
+      1024
+    ],
+    "invalid_or_unapproved_weights_fail_closed": true,
+    "mean_std_transform": false,
+    "network_downloads": false,
+    "normalized_range": [
+      0.0,
+      1.0
+    ],
+    "rgb_resize": "pillow-bilinear",
+    "trimap_resize": "pillow-nearest"
+  },
+  "real_comparison_status": "unavailable-unapproved-checkpoints",
+  "registry": [
+    {
+      "available": false,
+      "id": "vitmatte-small-distinctions-646",
+      "license": "checkpoint-license-status-unverified",
+      "manifest_sha256": "b69a5b2c881bd3b6b41a81b766c56e8ad4e057c4c1ab7806552ba34ed6ebd242",
+      "model_sha256": "d232841ac9d9657df3e62f6c92ed425ee25df18d337245cd8b903fc1ba183631",
+      "source_commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "source_relevant_files_sha256": "4aa6ed416671601a2000b7075018d68b265f7ddbff54dceb03f555fdc6c6244c",
+      "variant": "small-distinctions-646"
+    },
+    {
+      "available": false,
+      "id": "vitmatte-small-composition-1k",
+      "license": "checkpoint-license-status-unverified",
+      "manifest_sha256": "f0994a8400cb058e46c923727debd6665d9e680bd40956327d2d68e0896f3cf3",
+      "model_sha256": "659b9bb2870f80cffbe20dae4c7f18417fbdf68c0195861d24e9082c28373a24",
+      "source_commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "source_relevant_files_sha256": "4aa6ed416671601a2000b7075018d68b265f7ddbff54dceb03f555fdc6c6244c",
+      "variant": "small-composition-1k"
+    },
+    {
+      "available": false,
+      "id": "vitmatte-base-distinctions-646",
+      "license": "checkpoint-license-status-unverified",
+      "manifest_sha256": "3b7cd84b5d56fc618567948292b90c65bb9a25403ce5ad8fe722c619036a29ba",
+      "model_sha256": "d30190833269c1bec3e37319fe67af151028d3be32f6f60f6663a51b209cc8c1",
+      "source_commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "source_relevant_files_sha256": "4aa6ed416671601a2000b7075018d68b265f7ddbff54dceb03f555fdc6c6244c",
+      "variant": "base-distinctions-646"
+    },
+    {
+      "available": false,
+      "id": "vitmatte-base-composition-1k",
+      "license": "checkpoint-license-status-unverified",
+      "manifest_sha256": "1be4469fab328a1bc33d17ea69d5c00f614c881060f575d66ba1d076b99c5b77",
+      "model_sha256": "87bb10979f816061497ba6867b338c65a05cebd7d1507f6dde92a86382dec1f2",
+      "source_commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "source_relevant_files_sha256": "4aa6ed416671601a2000b7075018d68b265f7ddbff54dceb03f555fdc6c6244c",
+      "variant": "base-composition-1k"
+    }
+  ],
+  "resource_contract": {
+    "adapter_buffers": {
+      "authority_input_bytes": 16777216,
+      "authority_output_bytes": 4194304,
+      "restored_alpha_bytes": 117
+    },
+    "fixed_input_tensor_bytes": 16777216,
+    "fixed_output_tensor_bytes": 4194304,
+    "note": "Deterministic tensor/model/buffer sizes only; synthetic sizes are not four-variant quality, latency, RSS, or checkpoint-resource comparison.",
+    "real_checkpoint_metrics": null,
+    "synthetic_model_bytes": 2840
+  },
+  "runtime": {
+    "authority_match": true,
+    "edge_category_metrics": null,
+    "input_shape": [
+      1,
+      4,
+      1024,
+      1024
+    ],
+    "output_shape": [
+      1,
+      1,
+      1024,
+      1024
+    ],
+    "provider": {
+      "active": "CPUExecutionProvider",
+      "attempted_chain": [
+        "CPUExecutionProvider"
+      ],
+      "fallback_allowed": false,
+      "fallback_reason": null,
+      "fallback_used": false,
+      "requested": "cpu"
+    },
+    "raw_output_sha256": "bfc3452702094b272f743e45b3b871aeaaa120e5cc4c14748e557feb75732086",
+    "real_checkpoint_executed": false,
+    "resource_metrics": null,
+    "restored_alpha_sha256": "90096decf7348a2bac4ae4de77c2cdf04e14d8208b52326ee2b1477b5167e5e8",
+    "source": {
+      "commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "contract": "source-executed Pillow bilinear RGB + nearest trimap; fixed 1024; alpha-only",
+      "repository": "projects/python/rembg"
+    },
+    "status": "contract-parity-pass",
+    "synthetic_checkpoint_executed": true,
+    "tensor_sha256": "74e6783cc7b96685f93d19fb5c6758dcf561e7b18749c33de29efbae750f4761"
+  },
+  "schema": "m12.vitmatte-benchmark.v1",
+  "source_default_variant": "small-distinctions-646",
+  "status": "contract-pass-real-comparison-unavailable"
+}

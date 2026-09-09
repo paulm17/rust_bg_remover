@@ -1,0 +1,10 @@
+M12 ViTMatte real-checkpoint licence/approval metadata
+
+The four ViTMatte ONNX files are referenced from the pinned rembg registry but
+are not checked into this workspace. Their release assets are represented by
+the exact SHA-256 digests in the four M12 manifests. This metadata file is not
+the rembg source-code licence and does not grant checkpoint redistribution or
+commercial use. Checkpoint use remains unapproved until the upstream weight
+licence and intended-use review are independently verified.
+
+The rembg source repository is MIT licensed (see projects/python/rembg/LICENSE.txt).

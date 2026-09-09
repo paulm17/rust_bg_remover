@@ -8,6 +8,7 @@ use bgremove_models::{
 use ort::{session::Session, tensor::TensorElementType as OrtType, value::Tensor};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     path::Path,
     sync::atomic::{AtomicUsize, Ordering},
     sync::{Arc, Condvar, Mutex, OnceLock},
@@ -59,6 +60,41 @@ pub fn resize_u8_bilinear_js(
                 out[(y * dst_width as usize + x) * channels + c] =
                     (value + 0.5).floor().clamp(0.0, 255.0) as u8;
             }
+        }
+    }
+    Ok(out)
+}
+
+/// Pillow's nearest-neighbour coordinate rule, kept explicit for categorical
+/// trimap values. Interpolation here would invent classes between 0, 128 and
+/// 255 and is therefore a contract violation.
+pub fn resize_u8_pillow_nearest(
+    src: &[u8],
+    src_width: u32,
+    src_height: u32,
+    channels: usize,
+    dst_width: u32,
+    dst_height: u32,
+) -> Result<Vec<u8>> {
+    ensure!(
+        src_width > 0 && src_height > 0 && dst_width > 0 && dst_height > 0,
+        "resize dimensions must be positive"
+    );
+    ensure!(channels > 0, "resize channel count must be positive");
+    ensure!(
+        src.len() == src_width as usize * src_height as usize * channels,
+        "resize source length mismatch"
+    );
+    let mut out = vec![0u8; dst_width as usize * dst_height as usize * channels];
+    for y in 0..dst_height as usize {
+        let sy = (((y as f64 + 0.5) * src_height as f64 / dst_height as f64).floor() as usize)
+            .min(src_height as usize - 1);
+        for x in 0..dst_width as usize {
+            let sx = (((x as f64 + 0.5) * src_width as f64 / dst_width as f64).floor() as usize)
+                .min(src_width as usize - 1);
+            let source = (sy * src_width as usize + sx) * channels;
+            let target = (y * dst_width as usize + x) * channels;
+            out[target..target + channels].copy_from_slice(&src[source..source + channels]);
         }
     }
     Ok(out)
@@ -642,6 +678,7 @@ pub fn isnet_preprocess_rgb(
         PreprocessingProfile::ImglyIsnet => resize_u8_bilinear_js(&bytes, w, h, 3, 1024, 1024)?,
         PreprocessingProfile::RembgDis => resize_u8_lanczos(&bytes, w, h, 3, 1024, 1024)?,
         PreprocessingProfile::Generic
+        | PreprocessingProfile::VitMatte
         | PreprocessingProfile::RmbgRust
         | PreprocessingProfile::RembgBria
         | PreprocessingProfile::CarveKitFba => unreachable!(),
@@ -659,6 +696,7 @@ pub fn isnet_preprocess_rgb(
                 PreprocessingProfile::ImglyIsnet => (byte - 128.0) / 256.0,
                 PreprocessingProfile::RembgDis => byte / rembg_max - 0.5,
                 PreprocessingProfile::Generic
+                | PreprocessingProfile::VitMatte
                 | PreprocessingProfile::RmbgRust
                 | PreprocessingProfile::RembgBria
                 | PreprocessingProfile::CarveKitFba => unreachable!(),
@@ -826,6 +864,7 @@ impl IsnetSegmenter {
                 );
             }
             PreprocessingProfile::Generic
+            | PreprocessingProfile::VitMatte
             | PreprocessingProfile::RmbgRust
             | PreprocessingProfile::RembgBria
             | PreprocessingProfile::CarveKitFba => unreachable!(),
@@ -866,6 +905,7 @@ impl IsnetSegmenter {
                 apply_output_transform(output, Activation::None, OutputNormalization::None)?
             }
             PreprocessingProfile::Generic
+            | PreprocessingProfile::VitMatte
             | PreprocessingProfile::RmbgRust
             | PreprocessingProfile::RembgBria
             | PreprocessingProfile::CarveKitFba => unreachable!(),
@@ -884,6 +924,7 @@ impl IsnetSegmenter {
                 restore_rembg_dis_mask(&raw, image.width(), image.height())
             }
             PreprocessingProfile::Generic
+            | PreprocessingProfile::VitMatte
             | PreprocessingProfile::RmbgRust
             | PreprocessingProfile::RembgBria
             | PreprocessingProfile::CarveKitFba => unreachable!(),
@@ -910,6 +951,327 @@ impl bgremove_core::Segmenter for IsnetSegmenter {
         _prompt: Option<&bgremove_core::Prompt>,
     ) -> Result<bgremove_core::AlphaMask> {
         IsnetSegmenter::predict(self, image)
+    }
+}
+
+/// The four rembg ViTMatte checkpoint variants.  The real release files are
+/// represented by fail-closed manifests in `models/`; no checkpoint is
+/// downloaded by this crate and no variant is selected as a Rust default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VitMatteVariant {
+    SmallDistinctions646,
+    SmallComposition1k,
+    BaseDistinctions646,
+    BaseComposition1k,
+    SyntheticContract,
+}
+
+impl VitMatteVariant {
+    pub const REAL: [Self; 4] = [
+        Self::SmallDistinctions646,
+        Self::SmallComposition1k,
+        Self::BaseDistinctions646,
+        Self::BaseComposition1k,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::SmallDistinctions646 => "small-distinctions-646",
+            Self::SmallComposition1k => "small-composition-1k",
+            Self::BaseDistinctions646 => "base-distinctions-646",
+            Self::BaseComposition1k => "base-composition-1k",
+            Self::SyntheticContract => "synthetic-contract",
+        }
+    }
+
+    pub fn checkpoint_filename(self) -> &'static str {
+        match self {
+            Self::SmallDistinctions646 => "vitmatte-small-distinctions-646.onnx",
+            Self::SmallComposition1k => "vitmatte-small-composition-1k.onnx",
+            Self::BaseDistinctions646 => "vitmatte-base-distinctions-646.onnx",
+            Self::BaseComposition1k => "vitmatte-base-composition-1k.onnx",
+            Self::SyntheticContract => "vitmatte_synthetic.onnx",
+        }
+    }
+}
+
+/// Construct the exact rembg ViTMatte tensor: Pillow bilinear RGB followed
+/// by Pillow nearest trimap, all as NCHW values in [0,1] with no mean/std
+/// transform. The caller must pass a trimap on the canonical image grid.
+pub fn vitmatte_preprocess(
+    image: &bgremove_core::CanonicalImage,
+    trimap: &bgremove_core::Trimap,
+) -> Result<TensorInput> {
+    ensure!(
+        image.dimensions() == trimap.dimensions(),
+        "ViTMatte image and trimap dimensions differ"
+    );
+    let (width, height) = image.dimensions();
+    let mut rgb = Vec::with_capacity(image.rgb().len() * 3);
+    for pixel in image.rgb().data() {
+        for value in pixel {
+            ensure!(
+                value.is_finite() && (0.0..=1.0).contains(value),
+                "ViTMatte RGB must be finite and normalized"
+            );
+            rgb.push((value * 255.0).round().clamp(0.0, 255.0) as u8);
+        }
+    }
+    let rgb = resize_u8_pillow_bilinear(&rgb, width, height, 3, 1024, 1024)?;
+    let trimap_bytes: Vec<u8> = trimap
+        .data()
+        .iter()
+        .map(|class| match class {
+            bgremove_core::TrimapClass::Background => 0,
+            bgremove_core::TrimapClass::Unknown => 128,
+            bgremove_core::TrimapClass::Foreground => 255,
+        })
+        .collect();
+    let trimap = resize_u8_pillow_nearest(&trimap_bytes, width, height, 1, 1024, 1024)?;
+    let pixels = 1024 * 1024;
+    let mut values = vec![0.0f32; 4 * pixels];
+    for index in 0..pixels {
+        for channel in 0..3 {
+            values[channel * pixels + index] = rgb[index * 3 + channel] as f32 / 255.0;
+        }
+        values[3 * pixels + index] = trimap[index] as f32 / 255.0;
+    }
+    Ok(TensorInput {
+        shape: vec![1, 4, 1024, 1024],
+        values,
+    })
+}
+
+/// Apply rembg's uint8 conversion and Pillow bilinear restoration to a direct
+/// ViTMatte [1,1,1024,1024] alpha output.
+pub fn restore_vitmatte_alpha(
+    raw: &[f32],
+    source_width: u32,
+    source_height: u32,
+) -> Result<bgremove_core::AlphaMask> {
+    ensure!(
+        raw.len() == 1024 * 1024,
+        "ViTMatte output must contain 1024x1024 values"
+    );
+    ensure!(
+        raw.iter().all(|value| value.is_finite()),
+        "ViTMatte output contains NaN/Inf"
+    );
+    let bytes: Vec<u8> = raw
+        .iter()
+        .map(|value| (value.clamp(0.0, 1.0) * 255.0) as u8)
+        .collect();
+    let restored = resize_u8_pillow_bilinear(&bytes, 1024, 1024, 1, source_width, source_height)?;
+    bgremove_core::AlphaMask::new(
+        source_width,
+        source_height,
+        restored
+            .into_iter()
+            .map(|value| value as f32 / 255.0)
+            .collect(),
+    )
+}
+
+/// A single-session ViTMatte refiner. Unlike the segmenter pool this owns
+/// exactly one verified session for the selected variant, matching rembg's
+/// process-level one-session-per-variant cache while remaining deterministic
+/// and explicit about the selected manifest.
+pub struct VitMatteRefiner {
+    session: Arc<Mutex<VerifiedSession>>,
+    variant: VitMatteVariant,
+}
+
+type VitMatteCachedSession = (String, Arc<Mutex<VerifiedSession>>);
+static VITMATTE_SESSION_CACHE: OnceLock<Mutex<HashMap<String, VitMatteCachedSession>>> =
+    OnceLock::new();
+
+pub struct VitMatteRunEvidence {
+    pub tensor: TensorInput,
+    pub raw_output: TensorOutput,
+    pub restored: bgremove_core::AlphaMask,
+}
+
+fn validate_vitmatte_manifest_contract(
+    manifest: &ModelManifest,
+    variant: VitMatteVariant,
+) -> Result<()> {
+    ensure!(
+        manifest.algorithm_family == "vitmatte",
+        "ViTMatte adapter requires algorithm_family=vitmatte"
+    );
+    ensure!(
+        manifest.preprocessing_profile == PreprocessingProfile::VitMatte,
+        "ViTMatte adapter requires the dedicated vitmatte preprocessing profile"
+    );
+    ensure!(
+        manifest.model_variant == variant.id(),
+        "manifest variant {} does not match selected {}",
+        manifest.model_variant,
+        variant.id()
+    );
+    ensure!(
+        manifest.input_name == "pixel_values"
+            && manifest.output_name == "alphas"
+            && manifest.input_type == Some(TensorElementType::F32)
+            && manifest.output_type == Some(TensorElementType::F32)
+            && manifest.auxiliary_input_names.is_empty()
+            && manifest.auxiliary_input_shapes.is_empty()
+            && manifest.output_index == Some(0),
+        "ViTMatte input/output metadata does not match the pinned ONNX contract"
+    );
+    ensure!(
+        manifest.width == 1024 && manifest.height == 1024,
+        "ViTMatte manifest must declare fixed 1024x1024 dimensions"
+    );
+    ensure!(
+        manifest.layout == bgremove_models::ModelLayout::Nchw
+            && manifest.aspect == bgremove_models::AspectPolicy::Stretch
+            && manifest.resize_filter == bgremove_models::ResizeFilter::Bilinear
+            && manifest.channel_order == bgremove_models::ChannelOrder::Rgb
+            && manifest.scale == 1.0
+            && manifest.mean == [0.0; 3]
+            && manifest.std == [1.0; 3]
+            && manifest.activation == Activation::None
+            && manifest.output_normalization == OutputNormalization::Clamp,
+        "ViTMatte manifest does not match the four-channel rembg contract"
+    );
+    ensure!(
+        manifest.input_shape
+            == vec![
+                DimensionSpec::Static(1),
+                DimensionSpec::Static(4),
+                DimensionSpec::Static(1024),
+                DimensionSpec::Static(1024),
+            ],
+        "ViTMatte input shape must be [1,4,1024,1024]"
+    );
+    ensure!(
+        manifest.output_shape
+            == vec![
+                DimensionSpec::Static(1),
+                DimensionSpec::Static(1),
+                DimensionSpec::Static(1024),
+                DimensionSpec::Static(1024),
+            ],
+        "ViTMatte output shape must be [1,1,1024,1024]"
+    );
+    manifest
+        .validate()
+        .context("validate complete ViTMatte manifest metadata")
+}
+
+impl VitMatteRefiner {
+    pub fn new(
+        manifest: &ModelManifest,
+        manifest_path: &Path,
+        runtime: &Path,
+        variant: VitMatteVariant,
+        requested: RequestedProvider,
+        fallback_allowed: bool,
+    ) -> Result<Self> {
+        validate_vitmatte_manifest_contract(manifest, variant)?;
+        let verified_model_path = manifest.verify_model_hash(manifest_path).context(
+            "verify ViTMatte model, checkpoint licence and manifest before cache lookup",
+        )?;
+        let runtime_identity = runtime
+            .canonicalize()
+            .with_context(|| format!("canonicalize ONNX Runtime path {}", runtime.display()))?;
+        let identity = format!(
+            "{}|{}|{}|{}|{}|{}|{}|{:?}|{}",
+            manifest.id,
+            verified_model_path.display(),
+            manifest.sha256,
+            manifest.license_sha256,
+            manifest.source_commit,
+            manifest.source_relevant_files_sha256,
+            runtime_identity.display(),
+            requested,
+            fallback_allowed
+        );
+        let cache = VITMATTE_SESSION_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut cache = cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("ViTMatte session cache lock poisoned"))?;
+        let session = if let Some((cached_identity, session)) = cache.get(variant.id()) {
+            ensure!(
+                cached_identity == &identity,
+                "ViTMatte variant {} cache identity mismatch; refusing to reuse a session for a different manifest, checkpoint, runtime or provider",
+                variant.id()
+            );
+            Arc::clone(session)
+        } else {
+            let session = Arc::new(Mutex::new(VerifiedSession::open(
+                manifest,
+                manifest_path,
+                runtime,
+                requested,
+                fallback_allowed,
+            )?));
+            cache.insert(variant.id().to_owned(), (identity, Arc::clone(&session)));
+            session
+        };
+        Ok(Self { session, variant })
+    }
+
+    pub fn variant(&self) -> VitMatteVariant {
+        self.variant
+    }
+
+    pub fn predict(
+        &mut self,
+        image: &bgremove_core::CanonicalImage,
+        trimap: &bgremove_core::Trimap,
+    ) -> Result<bgremove_core::AlphaMask> {
+        Ok(self.predict_with_evidence(image, trimap)?.restored)
+    }
+
+    pub fn predict_with_evidence(
+        &mut self,
+        image: &bgremove_core::CanonicalImage,
+        trimap: &bgremove_core::Trimap,
+    ) -> Result<VitMatteRunEvidence> {
+        let tensor = vitmatte_preprocess(image, trimap)?;
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow::anyhow!("ViTMatte session lock poisoned"))?;
+        let raw_output = session.run(&tensor.shape, &tensor.values)?;
+        let raw = match raw_output.shape.as_slice() {
+            [1, 1, 1024, 1024] | [1, 1024, 1024, 1] | [1024, 1024] => raw_output.values.clone(),
+            other => bail!("ViTMatte output shape {other:?} is not a single 1024x1024 alpha"),
+        };
+        let restored = restore_vitmatte_alpha(&raw, image.width(), image.height())?;
+        Ok(VitMatteRunEvidence {
+            tensor,
+            raw_output,
+            restored,
+        })
+    }
+
+    pub fn provider(&self) -> ProviderReport {
+        self.session
+            .lock()
+            .expect("ViTMatte session lock poisoned")
+            .provider()
+    }
+}
+
+impl bgremove_core::AlphaRefiner for VitMatteRefiner {
+    fn refine(
+        &mut self,
+        image: &bgremove_core::CanonicalImage,
+        coarse: &bgremove_core::AlphaMask,
+        trimap: &bgremove_core::Trimap,
+    ) -> Result<bgremove_core::RefinedMatte> {
+        ensure!(
+            coarse.dimensions() == image.dimensions() && trimap.dimensions() == image.dimensions(),
+            "ViTMatte image, coarse alpha and trimap dimensions differ"
+        );
+        // ViTMatte predicts alpha only. Foreground colour is intentionally
+        // left to the configured foreground estimator, so contaminated RGB
+        // is never silently carried through the refiner.
+        let alpha = self.predict(image, trimap)?;
+        bgremove_core::RefinedMatte::new(alpha, None, None)
     }
 }
 
@@ -1785,6 +2147,10 @@ impl VerifiedSession {
     }
     pub fn run_count(&self) -> u64 {
         self.run_count
+    }
+
+    pub fn provider(&self) -> ProviderReport {
+        self.inspection.provider.clone()
     }
 }
 struct PoolState {
@@ -7413,5 +7779,224 @@ mod tests {
         model.extend(default);
         assert_eq!(declared_opset(&model), Some(13));
         assert_eq!(declared_opset(&vendor), None);
+    }
+
+    #[test]
+    fn vitmatte_nearest_resize_preserves_categories_and_fixed_dimensions() {
+        let input = [0u8, 128, 255, 0, 255, 128];
+        let output = resize_u8_pillow_nearest(&input, 3, 2, 1, 7, 5).unwrap();
+        assert_eq!(output.len(), 35);
+        assert!(output.iter().all(|value| matches!(value, 0 | 128 | 255)));
+        assert_eq!(&output[..7], &[0, 0, 128, 128, 128, 255, 255]);
+    }
+
+    #[test]
+    fn vitmatte_preprocess_is_four_channel_zero_to_one_nchw_without_normalization() {
+        let image = bgremove_core::CanonicalImage::new(
+            2,
+            1,
+            vec![[0.0, 64.0 / 255.0, 1.0], [1.0, 128.0 / 255.0, 0.0]],
+        )
+        .unwrap();
+        let trimap = bgremove_core::Trimap::new(
+            2,
+            1,
+            vec![
+                bgremove_core::TrimapClass::Background,
+                bgremove_core::TrimapClass::Foreground,
+            ],
+        )
+        .unwrap();
+        let tensor = vitmatte_preprocess(&image, &trimap).unwrap();
+        assert_eq!(tensor.shape, vec![1, 4, 1024, 1024]);
+        assert!(tensor
+            .values
+            .iter()
+            .all(|value| (0.0..=1.0).contains(value)));
+        let plane = 1024 * 1024;
+        assert_eq!(tensor.values[0], 0.0);
+        assert_eq!(tensor.values[plane], 64.0 / 255.0);
+        assert_eq!(tensor.values[2 * plane], 1.0);
+        assert_eq!(tensor.values[3 * plane], 0.0);
+        assert_eq!(tensor.values[4 * plane - 1], 1.0);
+    }
+
+    #[test]
+    fn vitmatte_manifest_variants_are_registered_but_fail_closed_without_weights() {
+        let paths = [
+            "../../models/m12_vitmatte_small_distinctions.toml",
+            "../../models/m12_vitmatte_small_composition.toml",
+            "../../models/m12_vitmatte_base_distinctions.toml",
+            "../../models/m12_vitmatte_base_composition.toml",
+        ];
+        for path in paths {
+            let manifest =
+                bgremove_models::parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap();
+            assert_eq!(manifest.algorithm_family, "vitmatte");
+            assert_eq!(manifest.input_shape.len(), 4);
+            assert!(!manifest.intended_use_approved);
+            assert!(manifest.verify_model_hash(Path::new(path)).is_err());
+        }
+    }
+
+    #[test]
+    fn vitmatte_contract_tampering_fails_before_runtime_access() {
+        let path = Path::new("../../models/m12_vitmatte_synthetic.toml");
+        let base = || bgremove_models::parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let error_for = |manifest: ModelManifest| {
+            VitMatteRefiner::new(
+                &manifest,
+                path,
+                Path::new("/definitely/not/a/runtime.dylib"),
+                VitMatteVariant::SyntheticContract,
+                RequestedProvider::Cpu,
+                false,
+            )
+            .err()
+            .expect("tampered ViTMatte contract must fail")
+            .to_string()
+        };
+
+        let mut names = base();
+        names.input_name = "wrong".into();
+        let error = error_for(names);
+        assert!(
+            error.contains("input/output metadata"),
+            "unexpected name error: {error}"
+        );
+
+        let mut types = base();
+        types.input_type = None;
+        let error = error_for(types);
+        assert!(
+            error.contains("input/output metadata"),
+            "unexpected type error: {error}"
+        );
+
+        let mut profile = base();
+        profile.preprocessing_profile = PreprocessingProfile::Generic;
+        let error = error_for(profile);
+        assert!(
+            error.contains("dedicated vitmatte preprocessing profile"),
+            "unexpected profile error: {error}"
+        );
+
+        let mut shape = base();
+        shape.input_shape[1] = DimensionSpec::Static(3);
+        let error = error_for(shape);
+        assert!(
+            error.contains("input shape"),
+            "unexpected shape error: {error}"
+        );
+
+        let mut normalization = base();
+        normalization.mean = [0.5, 0.0, 0.0];
+        let error = error_for(normalization);
+        assert!(
+            error.contains("four-channel rembg contract"),
+            "unexpected normalization error: {error}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires ORT_DYLIB; validates one-session cache identity"]
+    fn vitmatte_cache_reuses_only_identical_manifest_runtime_and_provider() {
+        let path = Path::new("../../models/m12_vitmatte_synthetic.toml");
+        let manifest =
+            bgremove_models::parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let runtime = std::path::PathBuf::from(std::env::var_os("ORT_DYLIB").expect("ORT_DYLIB"));
+        let first = VitMatteRefiner::new(
+            &manifest,
+            path,
+            &runtime,
+            VitMatteVariant::SyntheticContract,
+            RequestedProvider::Cpu,
+            false,
+        )
+        .unwrap();
+        let second = VitMatteRefiner::new(
+            &manifest,
+            path,
+            &runtime,
+            VitMatteVariant::SyntheticContract,
+            RequestedProvider::Cpu,
+            false,
+        )
+        .unwrap();
+        assert_eq!(first.provider(), second.provider());
+        assert!(Arc::ptr_eq(&first.session, &second.session));
+        let mut mismatched = manifest.clone();
+        mismatched.id = "vitmatte-synthetic-other-id".into();
+        assert!(VitMatteRefiner::new(
+            &mismatched,
+            path,
+            &runtime,
+            VitMatteVariant::SyntheticContract,
+            RequestedProvider::Cpu,
+            false,
+        )
+        .is_err());
+        assert!(VitMatteRefiner::new(
+            &manifest,
+            path,
+            &runtime,
+            VitMatteVariant::SyntheticContract,
+            RequestedProvider::Coreml,
+            false,
+        )
+        .is_err());
+    }
+
+    #[test]
+    #[ignore = "requires ORT_DYLIB; validates generic pipeline foreground stage"]
+    fn vitmatte_alpha_only_refiner_composes_through_foreground_estimator() {
+        struct RecordingEstimator {
+            saw_alpha_only: Arc<Mutex<bool>>,
+        }
+        impl bgremove_core::ForegroundEstimator for RecordingEstimator {
+            fn estimate(
+                &self,
+                image: &bgremove_core::CanonicalImage,
+                matte: &bgremove_core::RefinedMatte,
+            ) -> Result<bgremove_core::RgbImageF32> {
+                *self.saw_alpha_only.lock().unwrap() =
+                    matte.foreground().is_none() && matte.background().is_none();
+                bgremove_core::RgbImageF32::constant(
+                    image.width(),
+                    image.height(),
+                    [0.25, 0.5, 0.75],
+                )
+            }
+        }
+        let path = Path::new("../../models/m12_vitmatte_synthetic.toml");
+        let manifest =
+            bgremove_models::parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let runtime = std::path::PathBuf::from(std::env::var_os("ORT_DYLIB").expect("ORT_DYLIB"));
+        let refiner = VitMatteRefiner::new(
+            &manifest,
+            path,
+            &runtime,
+            VitMatteVariant::SyntheticContract,
+            RequestedProvider::Cpu,
+            false,
+        )
+        .unwrap();
+        let seen = Arc::new(Mutex::new(false));
+        let mut pipeline = bgremove_core::Pipeline::new(
+            bgremove_core::PipelineConfig::default()
+                .resolved_for(13, 9)
+                .unwrap(),
+            Box::new(bgremove_core::NoOpSegmenter),
+            Box::new(bgremove_core::NoOpMaskTransform),
+            Box::new(refiner),
+            Box::new(RecordingEstimator {
+                saw_alpha_only: Arc::clone(&seen),
+            }),
+        );
+        let image =
+            bgremove_core::CanonicalImage::new(13, 9, vec![[0.2, 0.3, 0.4]; 13 * 9]).unwrap();
+        let result = pipeline.run(&image, None).unwrap();
+        assert_eq!(result.rgb().data()[0], [0.25, 0.5, 0.75]);
+        assert!(*seen.lock().unwrap());
     }
 }
