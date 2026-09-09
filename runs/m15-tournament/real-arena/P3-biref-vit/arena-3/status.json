@@ -1,0 +1,22 @@
+{
+  "candidate": "P3-biref-vit",
+  "declared_split": "validation",
+  "evaluated_image": false,
+  "image": "arena-3",
+  "reason": "not-run: runtime/model initialization failed: create CPU ONNX session for birefnet-general@rembg-v0.0.0: Could not find an implementation for ScatterND(16) node with name '/bb/layers.0/ScatterND'",
+  "required_artifacts": [
+    "resolved-config.json",
+    "coarse-alpha.png",
+    "cleaned-alpha.png",
+    "trimap.png",
+    "refined-alpha.png",
+    "foreground.png",
+    "cutout.png",
+    "composite-white.png",
+    "composite-black.png",
+    "alpha-diff.png",
+    "boundary-diff.png",
+    "metrics.json"
+  ],
+  "status": "not-run"
+}

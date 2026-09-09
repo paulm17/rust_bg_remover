@@ -33,6 +33,14 @@
 !/runs/m13-foreground/report.json
 !/runs/m14-sam/
 !/runs/m14-sam/report.json
+!/runs/m15-tournament/
+runs/m15-tournament/raw-cache/
+runs/m15-tournament/raw-cache-real/
+runs/m15-tournament/raw-cache-proof/
+runs/m15-tournament/raw-cache-probe/
+!/runs/m15-tournament/report.json
+!/runs/m15-tournament/report.sha256
+!/runs/m15-tournament/report.html
 /models/*.onnx
 /models/*.ort
 !/models/fixtures/

@@ -1,0 +1,22 @@
+{
+  "candidate": "P1-isnet-fast",
+  "declared_split": "tune",
+  "evaluated_image": false,
+  "image": "arena-1",
+  "reason": "not-run: runtime/model initialization failed: create CPU ONNX session for isnet@imgly-fp32: Could not find an implementation for MaxPool(12) node with name '/stage1/pool1/MaxPool'",
+  "required_artifacts": [
+    "resolved-config.json",
+    "coarse-alpha.png",
+    "cleaned-alpha.png",
+    "trimap.png",
+    "refined-alpha.png",
+    "foreground.png",
+    "cutout.png",
+    "composite-white.png",
+    "composite-black.png",
+    "alpha-diff.png",
+    "boundary-diff.png",
+    "metrics.json"
+  ],
+  "status": "not-run"
+}

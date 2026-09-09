@@ -1,0 +1,22 @@
+{
+  "candidate": "P4-bria-vit",
+  "declared_split": "blind",
+  "evaluated_image": false,
+  "image": "arena-5",
+  "reason": "unavailable: checkpoint missing or hash verification failed",
+  "required_artifacts": [
+    "resolved-config.json",
+    "coarse-alpha.png",
+    "cleaned-alpha.png",
+    "trimap.png",
+    "refined-alpha.png",
+    "foreground.png",
+    "cutout.png",
+    "composite-white.png",
+    "composite-black.png",
+    "alpha-diff.png",
+    "boundary-diff.png",
+    "metrics.json"
+  ],
+  "status": "unavailable"
+}

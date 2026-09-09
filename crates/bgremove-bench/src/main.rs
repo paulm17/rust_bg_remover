@@ -1,4 +1,5 @@
 // M0 corpus validator and M2 deterministic benchmark implementation.
+mod m15;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use bgremove_color::OriginalRgbEstimator;
@@ -220,6 +221,14 @@ enum Command {
     /// supplied, execute the checked-in synthetic four-channel graph.
     M12Smoke {
         #[arg(long, default_value = "runs/m12-vitmatte")]
+        output: PathBuf,
+    },
+    /// Run the deterministic staged M15 tournament over the checked-in
+    /// six-image arena; synthetic contract data is used when real ORT is
+    /// unavailable, and no weights are downloaded.
+    #[command(alias = "m15")]
+    M15Smoke {
+        #[arg(long, default_value = "runs/m15-tournament")]
         output: PathBuf,
     },
 }
@@ -519,6 +528,7 @@ fn main() -> Result<()> {
         Command::M10Smoke { output } => write_m10_smoke(&output)?,
         Command::M11Smoke { output } => write_m11_smoke(&output)?,
         Command::M12Smoke { output } => write_m12_smoke(&output)?,
+        Command::M15Smoke { output } => m15::run(&output)?,
     }
     Ok(())
 }

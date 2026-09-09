@@ -1,0 +1,22 @@
+{
+  "candidate": "P2-tracer-fba",
+  "declared_split": "tune",
+  "evaluated_image": false,
+  "image": "arena-1",
+  "reason": "not-run: runtime/model initialization failed: create CPU ONNX session for tracer-b7@carvekit-d8a8fd9: Could not find an implementation for Selu(6) node with name '/rfb2/branch0/branch0.0/selu/Selu'",
+  "required_artifacts": [
+    "resolved-config.json",
+    "coarse-alpha.png",
+    "cleaned-alpha.png",
+    "trimap.png",
+    "refined-alpha.png",
+    "foreground.png",
+    "cutout.png",
+    "composite-white.png",
+    "composite-black.png",
+    "alpha-diff.png",
+    "boundary-diff.png",
+    "metrics.json"
+  ],
+  "status": "not-run"
+}

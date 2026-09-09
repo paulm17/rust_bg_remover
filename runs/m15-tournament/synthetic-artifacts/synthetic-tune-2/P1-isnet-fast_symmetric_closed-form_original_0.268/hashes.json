@@ -1,0 +1,16 @@
+{
+  "alpha-diff.png": "cac5d777d2d2083467a9b396bc8428d7493e42f46594c6a6cfc1e0461f935c21",
+  "boundary-diff.png": "1bba2376dcc50fbfbcabca67551ca8f9b52602e8c5b2e945df2f179e191725cd",
+  "cleaned-alpha.png": "1abe5c8488a78df476bcddcbef345ca6549c6a325158f880a3b321dab7bf72be",
+  "coarse-alpha.png": "93191d3d6776b6d62cc508206d3227599fe112b4b065a015295eed76c9b75276",
+  "composite-black.png": "d6aced44bf0c84c5a7a0dcb1a9371bf6d7a18bca3386273948c0947a57e18949",
+  "composite-white.png": "405a3ad91199d0e468d155e9a6217637e4c3f77cbbc6e05cae83e882d9028421",
+  "cutout.png": "6378a953bbd6cd80fc459a91202d8ec6d44e04641b107e29af4e58b973c479fb",
+  "foreground.png": "de2f0a92ef4af35ae1e5e4f0f0c08d5efe2bded30ca148a4e8a3af13b965910d",
+  "input.png": "de2f0a92ef4af35ae1e5e4f0f0c08d5efe2bded30ca148a4e8a3af13b965910d",
+  "metrics.json": "f58a9259797663998cb1d28056ee9043c6435bbc557838f0aeae955f9db7b6af",
+  "reference.png": "de2f0a92ef4af35ae1e5e4f0f0c08d5efe2bded30ca148a4e8a3af13b965910d",
+  "refined-alpha.png": "b80316b7995e2bf42ed5fd222639040996bbeaa5b6c326576f08e79c41bd1109",
+  "resolved-config.json": "a1ad5a69007b623f720ea926b03229218cc4c1bc72795443a810a963d677d9c2",
+  "trimap.png": "cd53b1448b57d15d8b0835769880353e757e822e4cb60473525b5a303f941446"
+}
