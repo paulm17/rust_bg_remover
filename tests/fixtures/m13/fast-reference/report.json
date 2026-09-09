@@ -1,0 +1,139 @@
+{
+  "schema": "m13.photoroom-fast-authority.v1",
+  "status": "source-executed-deterministic",
+  "source": {
+    "repository": "https://github.com/Photoroom/fast-foreground-estimation",
+    "file": "blurfusion_foreground_estimation.py",
+    "source_sha256": "b9cbb83ddfa93c4fb2686fe99f9bc61769d9b6001df363660c664de8ad9ce94c",
+    "commit": "a98fe5dfe4b61521de1a92dcaeb6d138f95bc97d",
+    "source_url": "https://raw.githubusercontent.com/Photoroom/fast-foreground-estimation/a98fe5dfe4b61521de1a92dcaeb6d138f95bc97d/blurfusion_foreground_estimation.py",
+    "license_status": "upstream repository has no checked-in license file; source is not retained, only numerical parity artifacts are retained"
+  },
+  "runtime": {
+    "python": "3.12.11",
+    "numpy": "2.3.2",
+    "opencv-python": "4.10.0.84"
+  },
+  "opencv": {
+    "blur": "cv2.blur",
+    "border": "BORDER_DEFAULT/BORDER_REFLECT_101",
+    "kernel": "(r,r), even anchor preserved"
+  },
+  "parameters": {
+    "coarse_kernel_width": 90,
+    "fine_kernel_width": 6,
+    "coarse_iterations": 1,
+    "fine_iterations": 1,
+    "epsilon": 1e-05,
+    "passes": 2,
+    "background_state": "pass1 blurred_B is pass2 B"
+  },
+  "runs": 2,
+  "cases": [
+    {
+      "id": 0,
+      "width": 5,
+      "height": 3,
+      "kernel_widths": [
+        90,
+        6
+      ],
+      "artifacts": {
+        "image.f32le": {
+          "bytes": 180,
+          "sha256": "88833917b9a88ec7e76a075f6c034314b822e28b537975d2a56e1ff659e2f646"
+        },
+        "alpha.f32le": {
+          "bytes": 60,
+          "sha256": "f7d6d655b51679622f2ad279796494edfc2d640e2e9169c24d2c2599fc13bbc8"
+        },
+        "pass1-foreground.f32le": {
+          "bytes": 180,
+          "sha256": "7afd64df16f7b11fa6d5d93b43019972ac5a5e74aabbcf38a93f86c9616946e3"
+        },
+        "pass1-blurred-background.f32le": {
+          "bytes": 180,
+          "sha256": "8bce6f36e8c80edd4082c336aa7e5a62976c98377efc8023b605512dd4a616f7"
+        },
+        "pass2-foreground.f32le": {
+          "bytes": 180,
+          "sha256": "208a8eff0fb1a58a15d6a2f0d9f4a4000bea37306b8dda9805b942a8baab8ed5"
+        },
+        "pass2-blurred-background.f32le": {
+          "bytes": 180,
+          "sha256": "7c17d53aac6edf2dab688d2c8036cf927a7a7140c453394f5458f6a1f341a33e"
+        }
+      }
+    },
+    {
+      "id": 1,
+      "width": 7,
+      "height": 4,
+      "kernel_widths": [
+        90,
+        6
+      ],
+      "artifacts": {
+        "image.f32le": {
+          "bytes": 336,
+          "sha256": "3ec88fd2bc96fb70a778853d4e840c256e93d63cc022d41f8efae42f309784f8"
+        },
+        "alpha.f32le": {
+          "bytes": 112,
+          "sha256": "8a5e8a5582f873979cd3fad8f95bcdcfe819da99c903d42df2d54490fae827f9"
+        },
+        "pass1-foreground.f32le": {
+          "bytes": 336,
+          "sha256": "e7f6f18b3331abd7618108fc268821ed5deb866ae9133c1f7656f4984663004d"
+        },
+        "pass1-blurred-background.f32le": {
+          "bytes": 336,
+          "sha256": "25c5b5a309f34dc1a429a6a329d0f6b4e6fab9f4adab857d5cfa49da3bf194ad"
+        },
+        "pass2-foreground.f32le": {
+          "bytes": 336,
+          "sha256": "9ae67a6d373fef52151e6a0d39b430efff109384c6ddb8c51561216e0d55cfe5"
+        },
+        "pass2-blurred-background.f32le": {
+          "bytes": 336,
+          "sha256": "afadef14966da54fe0aa4c76d818d491a153cd31e224f2932e63e13731c7cc02"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "width": 2,
+      "height": 6,
+      "kernel_widths": [
+        90,
+        6
+      ],
+      "artifacts": {
+        "image.f32le": {
+          "bytes": 144,
+          "sha256": "f3511d6cee0f4f2dae3c8d1bf69be736c2bd407c93c7d90c08f81cf7f3e9163f"
+        },
+        "alpha.f32le": {
+          "bytes": 48,
+          "sha256": "da2c9d3d4116adac933758997291517db9e1f1b1b582da613dbae0ead937a889"
+        },
+        "pass1-foreground.f32le": {
+          "bytes": 144,
+          "sha256": "f338784cd13470f717511ec732e17ea38ea10c8d1aea091d0eb15012a4897fc9"
+        },
+        "pass1-blurred-background.f32le": {
+          "bytes": 144,
+          "sha256": "89a25898bba5a4f7af4765a64561fecc8d9acb8fa927eea468d4bd87f1efa232"
+        },
+        "pass2-foreground.f32le": {
+          "bytes": 144,
+          "sha256": "e6d36dd0f58902db4738d689ea4cdb2a1e3de42de169e5a6fa9e978393990077"
+        },
+        "pass2-blurred-background.f32le": {
+          "bytes": 144,
+          "sha256": "98a40f8720ac641f123f76cdc28e1f86ad9be014a08b08400e40173eabc03212"
+        }
+      }
+    }
+  ]
+}

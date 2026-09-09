@@ -992,7 +992,10 @@ fn python_round(value: f64) -> usize {
 
 /// Port of PyMatting's `_estimate_fb_ml`; unlike color division this performs
 /// the same multilevel coupled foreground/background updates and clamps each
-/// iterate to encoded RGB bounds.
+/// iterate to encoded RGB bounds. PyMatting's `ceil(log2(max_size))` produces
+/// an undefined zero-level interpolation fraction for a 1x1 image; Rust
+/// deliberately supplies one safe level for that edge case, so this guard is
+/// a safety behavior rather than a claim of cross-language parity there.
 pub fn estimate_foreground_ml(
     image: &[[f32; 3]],
     alpha: &[f32],
@@ -1060,7 +1063,9 @@ pub fn estimate_foreground_ml(
     let mut bp = vec![bm];
     let mut prev_w = 1usize;
     let mut prev_h = 1usize;
-    let levels = (f64::from(w0.max(h0) as u32).log2().ceil() as usize).max(0);
+    // Retain one safe level for a one-pixel image so the scale exponent is
+    // never 0/0 (this intentionally differs from the undefined source edge).
+    let levels = (f64::from(w0.max(h0) as u32).log2().ceil() as usize).max(1);
     for level in 0..=levels {
         let f = if levels == 0 {
             0.0
@@ -1478,6 +1483,18 @@ mod tests {
             .iter()
             .flatten()
             .all(|v| v.is_finite() && (*v >= 0.0 && *v <= 1.0)));
+    }
+
+    #[test]
+    fn one_pixel_foreground_guard_is_finite_and_deterministic() {
+        let image = vec![[0.6, 0.3, 0.1]];
+        let alpha = vec![0.5];
+        let first = estimate_foreground_ml(&image, &alpha, 1, 1, 1e-5, 2, 1, 32, 1.0).unwrap();
+        let second = estimate_foreground_ml(&image, &alpha, 1, 1, 1e-5, 2, 1, 32, 1.0).unwrap();
+        assert_eq!(first.0, second.0);
+        assert_eq!(first.1, second.1);
+        assert!(first.0.data().iter().flatten().all(|v| v.is_finite()));
+        assert!(first.1.data().iter().flatten().all(|v| v.is_finite()));
     }
     #[test]
     fn bounded_working_resolution_restores_canonical_dimensions() {

@@ -29,6 +29,8 @@
 !/runs/m12-vitmatte/report.json
 !/runs/m12-vitmatte/authority/
 !/runs/m12-vitmatte/authority/*
+!/runs/m13-foreground/
+!/runs/m13-foreground/report.json
 /models/*.onnx
 /models/*.ort
 !/models/fixtures/

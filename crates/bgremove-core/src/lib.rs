@@ -770,6 +770,73 @@ impl GeometryTransform {
         }
         AlphaMask::new(self.source_width, self.source_height, out)
     }
+    /// Restore a model-grid RGB field to the canonical source grid using the
+    /// same pixel-centre geometry and interpolation as the forward image.
+    /// Contain/thumbnail padding is excluded from the interpolation footprint
+    /// by sampling only the valid content rectangle; cover-crop samples
+    /// outside the visible crop as black.  This is
+    /// used for model-provided FBA foreground/background channels so the
+    /// colour estimator sees the same canonical grid as the recovered alpha.
+    pub fn inverse_rgb(&self, image: &RgbImageF32) -> Result<RgbImageF32> {
+        ensure!(
+            image.dimensions() == self.target_dimensions(),
+            "RGB dimensions do not match geometry target"
+        );
+        let mut out = Vec::with_capacity(checked_len(self.source_width, self.source_height)?);
+        for y in 0..self.source_height {
+            for x in 0..self.source_width {
+                let (tx, ty) = self.forward_coordinate(x as f32 + 0.5, y as f32 + 0.5)?;
+                if matches!(self.policy, GeometryPolicy::CoverCrop)
+                    && (tx < 0.5
+                        || tx > self.target_width as f32 - 0.5
+                        || ty < 0.5
+                        || ty > self.target_height as f32 - 0.5)
+                {
+                    out.push([0.0; 3]);
+                } else {
+                    let (sx, sy) = if matches!(
+                        self.policy,
+                        GeometryPolicy::ContainPad | GeometryPolicy::Thumbnail
+                    ) {
+                        (
+                            tx.clamp(
+                                self.pad_left as f32 + 0.5,
+                                (self.pad_left + self.intermediate_width - 1) as f32 + 0.5,
+                            ),
+                            ty.clamp(
+                                self.pad_top as f32 + 0.5,
+                                (self.pad_top + self.intermediate_height - 1) as f32 + 0.5,
+                            ),
+                        )
+                    } else {
+                        (tx, ty)
+                    };
+                    if matches!(
+                        self.policy,
+                        GeometryPolicy::ContainPad | GeometryPolicy::Thumbnail
+                    ) {
+                        out.push(sample_rgb_rect(
+                            image,
+                            sx - 0.5,
+                            sy - 0.5,
+                            self.filter,
+                            (
+                                self.pad_left,
+                                self.pad_top,
+                                self.intermediate_width,
+                                self.intermediate_height,
+                            ),
+                        ));
+                    } else {
+                        // Cover-crop intentionally samples the complete model
+                        // grid after its explicit crop/outside handling above.
+                        out.push(sample_rgb(image, sx - 0.5, sy - 0.5, self.filter, false));
+                    }
+                }
+            }
+        }
+        RgbImageF32::new(self.source_width, self.source_height, out)
+    }
     fn resample_mask(&self, mask: &AlphaMask, forward: bool) -> Result<AlphaMask> {
         let _ = forward;
         let mut out = Vec::with_capacity(checked_len(self.target_width, self.target_height)?);
@@ -1124,6 +1191,25 @@ fn sample_rgb(
         filter,
         zero_outside,
         |ix, iy| image.data()[iy * image.width() as usize + ix],
+    )
+}
+
+fn sample_rgb_rect(
+    image: &RgbImageF32,
+    x: f32,
+    y: f32,
+    filter: ResizeFilter,
+    rect: (u32, u32, u32, u32),
+) -> [f32; 3] {
+    let (left, top, width, height) = rect;
+    sample_kernel(
+        x - left as f32,
+        y - top as f32,
+        width,
+        height,
+        filter,
+        false,
+        |ix, iy| image.data()[(iy + top as usize) * image.width() as usize + ix + left as usize],
     )
 }
 
@@ -1619,7 +1705,15 @@ impl Pipeline {
             )?,
             TransparentInputPolicy::ReplaceSourceAlpha => restored,
         };
-        let source_matte = RefinedMatte::new(alpha, None, None)?;
+        let foreground = matte
+            .foreground()
+            .map(|field| self.config.geometry.inverse_rgb(field))
+            .transpose()?;
+        let background = matte
+            .background()
+            .map(|field| self.config.geometry.inverse_rgb(field))
+            .transpose()?;
+        let source_matte = RefinedMatte::new(alpha, foreground, background)?;
         let rgb = self.foreground.estimate(image, &source_matte)?;
         ensure!(
             rgb.dimensions() == expected,
@@ -1645,6 +1739,7 @@ fn checked_len(width: u32, height: u32) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context;
 
     type Captured =
         std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, (u32, u32, usize)>>>;
@@ -1668,6 +1763,85 @@ mod tests {
             _prompt: Option<&Prompt>,
         ) -> Result<AlphaMask> {
             AlphaMask::zeros(1, 1)
+        }
+    }
+
+    struct FullFbaRefiner;
+    impl AlphaRefiner for FullFbaRefiner {
+        fn refine(
+            &mut self,
+            image: &CanonicalImage,
+            coarse: &AlphaMask,
+            trimap: &Trimap,
+        ) -> Result<RefinedMatte> {
+            ensure!(image.dimensions() == coarse.dimensions());
+            ensure!(image.dimensions() == trimap.dimensions());
+            RefinedMatte::new(
+                AlphaMask::ones(image.width(), image.height())?,
+                Some(RgbImageF32::constant(
+                    image.width(),
+                    image.height(),
+                    [0.73, 0.41, 0.19],
+                )?),
+                Some(RgbImageF32::constant(
+                    image.width(),
+                    image.height(),
+                    [0.11, 0.17, 0.23],
+                )?),
+            )
+        }
+    }
+
+    fn spatial_fba_field(width: u32, height: u32, foreground: bool) -> RgbImageF32 {
+        let pixels = (0..height)
+            .flat_map(|y| {
+                (0..width).map(move |x| {
+                    if y == 0 || y + 1 == height {
+                        [0.0; 3]
+                    } else if foreground {
+                        [
+                            0.62 + 0.04 * x as f32 + 0.03 * y as f32,
+                            0.31 + 0.02 * x as f32,
+                            0.18 + 0.04 * y as f32,
+                        ]
+                    } else {
+                        [
+                            0.11 + 0.03 * x as f32,
+                            0.27 + 0.02 * y as f32,
+                            0.73 - 0.02 * x as f32,
+                        ]
+                    }
+                })
+            })
+            .collect();
+        RgbImageF32::new(width, height, pixels).unwrap()
+    }
+
+    struct SpatialFullFbaRefiner;
+    impl AlphaRefiner for SpatialFullFbaRefiner {
+        fn refine(
+            &mut self,
+            image: &CanonicalImage,
+            coarse: &AlphaMask,
+            trimap: &Trimap,
+        ) -> Result<RefinedMatte> {
+            ensure!(image.dimensions() == coarse.dimensions());
+            ensure!(image.dimensions() == trimap.dimensions());
+            RefinedMatte::new(
+                AlphaMask::ones(image.width(), image.height())?,
+                Some(spatial_fba_field(image.width(), image.height(), true)),
+                Some(spatial_fba_field(image.width(), image.height(), false)),
+            )
+        }
+    }
+
+    struct FbaPassEstimator;
+    impl ForegroundEstimator for FbaPassEstimator {
+        fn estimate(&self, image: &CanonicalImage, matte: &RefinedMatte) -> Result<RgbImageF32> {
+            ensure!(matte.alpha().dimensions() == image.dimensions());
+            let foreground = matte.foreground().context("test FBA field was discarded")?;
+            ensure!(foreground.dimensions() == image.dimensions());
+            Ok(foreground.clone())
         }
     }
     #[test]
@@ -1786,6 +1960,112 @@ mod tests {
         let (tx, ty) = g.forward_coordinate(1.5, 0.5).unwrap();
         let (sx, sy) = g.inverse_coordinate(tx, ty).unwrap();
         assert!((sx - 1.5).abs() < 1e-6 && (sy - 0.5).abs() < 1e-6);
+        let rgb = RgbImageF32::constant(4, 4, [0.37, 0.51, 0.63]).unwrap();
+        let restored_rgb = g.inverse_rgb(&rgb).unwrap();
+        assert_eq!(restored_rgb.dimensions(), (4, 2));
+        assert!(restored_rgb.data().iter().all(|pixel| {
+            pixel
+                .iter()
+                .zip([0.37, 0.51, 0.63])
+                .all(|(actual, expected)| (*actual - expected).abs() < 1e-6)
+        }));
+    }
+
+    #[test]
+    fn pipeline_preserves_full_fba_fields_through_non_identity_geometry() {
+        let mut config = PipelineConfig::default().resolved_for(2, 1).unwrap();
+        config.geometry =
+            GeometryTransform::new(2, 1, 4, 2, GeometryPolicy::Stretch, ResizeFilter::Nearest)
+                .unwrap();
+        let image = CanonicalImage::new(2, 1, vec![[0.2, 0.3, 0.4], [0.7, 0.6, 0.5]]).unwrap();
+        let mut pipeline = Pipeline::new(
+            config,
+            Box::new(NoOpSegmenter),
+            Box::new(NoOpMaskTransform),
+            Box::new(FullFbaRefiner),
+            Box::new(FbaPassEstimator),
+        );
+        let result = pipeline.run(&image, None).unwrap();
+        assert_eq!(result.rgb().dimensions(), (2, 1));
+        assert!(result
+            .rgb()
+            .data()
+            .iter()
+            .all(|pixel| *pixel == [0.73, 0.41, 0.19]));
+    }
+
+    #[test]
+    fn inverse_rgb_padded_high_order_sampling_excludes_black_padding() {
+        let geometry = GeometryTransform::new(
+            3,
+            2,
+            5,
+            5,
+            GeometryPolicy::ContainPad,
+            ResizeFilter::Lanczos3,
+        )
+        .unwrap();
+        let model = spatial_fba_field(5, 5, true);
+        let restored = geometry.inverse_rgb(&model).unwrap();
+        let mut saw_padding_contamination_difference = false;
+        for y in 0..2u32 {
+            for x in 0..3u32 {
+                let (tx, ty) = geometry
+                    .forward_coordinate(x as f32 + 0.5, y as f32 + 0.5)
+                    .unwrap();
+                let sx = tx.clamp(0.5, 4.5);
+                let sy = ty.clamp(1.5, 3.5);
+                let expected = sample_rgb_rect(
+                    &model,
+                    sx - 0.5,
+                    sy - 0.5,
+                    ResizeFilter::Lanczos3,
+                    (0, 1, 5, 3),
+                );
+                let naive = sample_rgb(&model, sx - 0.5, sy - 0.5, ResizeFilter::Lanczos3, false);
+                let actual = restored.data()[(y * 3 + x) as usize];
+                assert!(actual
+                    .iter()
+                    .zip(expected)
+                    .all(|(a, e)| (a - e).abs() < 1e-6));
+                if naive.iter().zip(actual).any(|(a, e)| (a - e).abs() > 1e-4) {
+                    saw_padding_contamination_difference = true;
+                }
+            }
+        }
+        assert!(saw_padding_contamination_difference);
+    }
+
+    #[test]
+    fn pipeline_preserves_spatial_full_fba_through_padded_high_order_geometry() {
+        let mut config = PipelineConfig::default().resolved_for(3, 2).unwrap();
+        config.geometry = GeometryTransform::new(
+            3,
+            2,
+            5,
+            5,
+            GeometryPolicy::ContainPad,
+            ResizeFilter::Lanczos3,
+        )
+        .unwrap();
+        let image = CanonicalImage::new(3, 2, vec![[0.2, 0.3, 0.4]; 6]).unwrap();
+        let expected_model = spatial_fba_field(5, 5, true);
+        let expected = config.geometry.inverse_rgb(&expected_model).unwrap();
+        let mut pipeline = Pipeline::new(
+            config,
+            Box::new(NoOpSegmenter),
+            Box::new(NoOpMaskTransform),
+            Box::new(SpatialFullFbaRefiner),
+            Box::new(FbaPassEstimator),
+        );
+        let result = pipeline.run(&image, None).unwrap();
+        assert_eq!(result.rgb(), &expected);
+        assert!(result
+            .rgb()
+            .data()
+            .iter()
+            .flatten()
+            .all(|value| value.is_finite()));
     }
 
     #[test]

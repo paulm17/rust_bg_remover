@@ -1,0 +1,59 @@
+{
+  "schema": "m13.foreground-authority.v1",
+  "status": "source-executed-deterministic",
+  "source": {
+    "implementation": "pymatting.foreground.estimate_foreground_ml",
+    "version": "1.1.15-installed-pinned-source",
+    "path": "pymatting/foreground/estimate_foreground_ml.py",
+    "sha256": "fd78cfb439940debc54c89a00638f025c0daef0bacc07fba393572787e9431ca",
+    "license_sha256": "7be1f2cc0777ebabe655ba85c59ba1026ace94d7d906c791c5ada0e7b4b68323",
+    "jit": "disabled-for-source-execution-only"
+  },
+  "consumer_import_contracts": {
+    "backgroundremover": {
+      "commit": "fa480627829759b902f8c233388d7aa67ab38099",
+      "source": "backgroundremover/bg.py",
+      "source_sha256": "4ab631a8f2df06fabd4b05fc36894057ba93f0fd1250b4c60d2bdbe775936047",
+      "calls": "pymatting.foreground.estimate_foreground_ml"
+    },
+    "rembg": {
+      "commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+      "source": "rembg/bg.py",
+      "source_sha256": "2e1977b6d16d5369e2c20c5ca5d9ba2e2c0228f8beef39c5d2296df1879df62b",
+      "calls": "pymatting.foreground.estimate_foreground_ml"
+    }
+  },
+  "input": {
+    "width": 6,
+    "height": 4,
+    "channels": 3,
+    "working_space": "encoded-srgb"
+  },
+  "parameters": {
+    "regularization": 1e-05,
+    "n_small_iterations": 10,
+    "n_big_iterations": 2,
+    "small_size": 32,
+    "gradient_weight": 1.0
+  },
+  "runs": 2,
+  "artifacts": {
+    "image.f32le": {
+      "bytes": 288,
+      "sha256": "40be9171858ba98a082218b280daf2675a486691a83363556d6ce6cd6e4bf4ed"
+    },
+    "alpha.f32le": {
+      "bytes": 96,
+      "sha256": "8b5b31d0961474d403ab6ec1be77af7eaa024402b7e3f24a56a69a187a788b13"
+    },
+    "foreground.f32le": {
+      "bytes": 288,
+      "sha256": "4c19a00966e01de44ab67f3d57d83cff05c492f126f3d252c1229c796826f8ab"
+    },
+    "background.f32le": {
+      "bytes": 288,
+      "sha256": "1924223c1f66e49253bb5d48166324e3c8957166c6b0b80b459237164de5d6fd"
+    }
+  },
+  "hidden_rgb_under_alpha_zero_excluded": true
+}

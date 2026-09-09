@@ -1,0 +1,153 @@
+{
+  "fast_config": {
+    "coarse_iterations": 1,
+    "coarse_kernel_width": 90,
+    "complexity": "O(width*height) per pass and channel",
+    "edge_policy": "opencv-reflect101",
+    "epsilon": 0.00001,
+    "fine_iterations": 1,
+    "fine_kernel_width": 6,
+    "reference_size": 1024,
+    "scale_kernel_widths": false
+  },
+  "formula": "Ab=cv2.blur(A,(k,k)); Fb=cv2.blur(F*A,(k,k))/(Ab+epsilon); Bb=cv2.blur(B*(1-A),(k,k))/(1-Ab+epsilon); F=clip(Fb+A*(I-A*Fb-(1-A)*Bb),0,1); return (F,Bb)",
+  "gates": {
+    "all_finite": true,
+    "encoded_fast_improves_original_edge_composite": true,
+    "fba_exact": true,
+    "fba_threshold": 1e-7,
+    "pymatting_near_truth": true,
+    "pymatting_threshold": 0.0001
+  },
+  "input": {
+    "alpha_pattern": "0,.05,.25,.5,.95,1 repeated",
+    "height": 4,
+    "width": 6
+  },
+  "metric_note": "All candidates share the same known alpha, so changing the composite background scales foreground error by alpha; three backgrounds are retained and this limitation is reported rather than claiming independent background discrimination.",
+  "metrics": [
+    {
+      "all_finite": true,
+      "candidate": "fba-provided",
+      "edge_band_foreground_mae": 0.0,
+      "edge_band_multi_background_composite_mae": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "hidden_rgb_alpha_zero_excluded": true,
+      "multi_background_composite_mae": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rank": 1,
+      "visible_foreground_mae": 0.0,
+      "working_space": "encoded-srgb"
+    },
+    {
+      "all_finite": true,
+      "candidate": "pymatting-multilevel",
+      "edge_band_foreground_mae": 2.3475538455386413e-6,
+      "edge_band_multi_background_composite_mae": [
+        6.092789703870949e-7,
+        6.084640631343063e-7,
+        6.146728992462158e-7
+      ],
+      "hidden_rgb_alpha_zero_excluded": true,
+      "multi_background_composite_mae": [
+        4.988474415767996e-7,
+        4.98195504405885e-7,
+        5.031625391893613e-7
+      ],
+      "rank": 2,
+      "visible_foreground_mae": 1.889467284854618e-6,
+      "working_space": "encoded-srgb"
+    },
+    {
+      "all_finite": true,
+      "candidate": "fast-coarse-fine",
+      "edge_band_foreground_mae": 0.07103948295116425,
+      "edge_band_multi_background_composite_mae": [
+        0.016162084415555,
+        0.016162076964974403,
+        0.016162084415555
+      ],
+      "hidden_rgb_alpha_zero_excluded": true,
+      "multi_background_composite_mae": [
+        0.012929667718708515,
+        0.012929662130773067,
+        0.012929667718708515
+      ],
+      "rank": 3,
+      "visible_foreground_mae": 0.056831587105989456,
+      "working_space": "encoded-srgb"
+    },
+    {
+      "all_finite": true,
+      "candidate": "fast-coarse-fine",
+      "edge_band_foreground_mae": 0.08488926291465759,
+      "edge_band_multi_background_composite_mae": [
+        0.025314250960946083,
+        0.025314247235655785,
+        0.025314250960946083
+      ],
+      "hidden_rgb_alpha_zero_excluded": true,
+      "multi_background_composite_mae": [
+        0.020251400768756866,
+        0.020251397043466568,
+        0.020251400768756866
+      ],
+      "rank": 4,
+      "visible_foreground_mae": 0.06791140884160995,
+      "working_space": "linear-light"
+    },
+    {
+      "all_finite": true,
+      "candidate": "original-rgb",
+      "edge_band_foreground_mae": 0.29999998211860657,
+      "edge_band_multi_background_composite_mae": [
+        0.07100000977516174,
+        0.07099999487400055,
+        0.07100000977516174
+      ],
+      "hidden_rgb_alpha_zero_excluded": true,
+      "multi_background_composite_mae": [
+        0.056800007820129395,
+        0.0567999966442585,
+        0.056800007820129395
+      ],
+      "rank": 5,
+      "visible_foreground_mae": 0.23999997973442078,
+      "working_space": "encoded-srgb"
+    }
+  ],
+  "multi_backgrounds": [
+    [
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      0.20000000298023224,
+      0.5,
+      0.800000011920929
+    ]
+  ],
+  "ranking_key": "mean edge_band_multi_background_composite_mae then mean visible multi_background_composite_mae",
+  "schema": "m13.foreground-recovery.v1",
+  "source_authority": {
+    "photoroom": "tests/fixtures/m13/fast-reference/report.json",
+    "pymatting": "tests/fixtures/m13/reference/report.json"
+  },
+  "status": "pass",
+  "working_space_ablation": [
+    "encoded-srgb",
+    "linear-light"
+  ]
+}

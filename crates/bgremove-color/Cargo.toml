@@ -7,4 +7,8 @@ description = "Straight-alpha foreground estimation and encoded/linear compositi
 
 [dependencies]
 bgremove-core = { path = "../bgremove-core" }
+bgremove-matting = { path = "../bgremove-matting" }
 anyhow.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
