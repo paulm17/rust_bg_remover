@@ -1,0 +1,17 @@
+M14 SAM model metadata
+
+The release checkpoints are external rembg assets and are intentionally not
+distributed in this repository.  Their names and rembg MD5 release checksums
+are copied from projects/python/rembg/rembg/sessions/sam.py at commit
+030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709.  The Rust manifests use
+sha256 = "unavailable", external = true, and intended_use_approved = false;
+VerifiedSession therefore fails closed before any checkpoint can be opened.
+The exact real-weight gate is unavailable until the corresponding release
+files are provisioned and independently SHA-256 hashed.
+
+Code notice: the rembg adapter source is MIT, from
+projects/python/rembg/LICENSE.txt (sha256
+90a3215072968fd304669c5389f04f1274a587abdd0507d99dead0f5511f8999).
+Weight notice: Segment Anything model weights are Apache-2.0; see
+M14_SAM_MODEL_APACHE-2.0.txt. These notices are intentionally separate in
+the external manifests.

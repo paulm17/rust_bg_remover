@@ -1,0 +1,841 @@
+{
+  "schema": "m14.sam-authority.v3",
+  "status": "source-contract-pass-rust-fixture-consumer-pass",
+  "real_checkpoint_comparison": "unavailable-no-approved-local-sam-weights",
+  "rust_consumer_test": "bgremove-ort::sam::pinned_python_fixture_is_consumed_for_prompt_and_mask_stages",
+  "source": {
+    "implementation": "rembg.sessions.sam",
+    "commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+    "path": "projects/python/rembg/rembg/sessions/sam.py",
+    "sha256": "524bccb7b54acd3979d025e0451334e7a9d0d7e4cd4ce81007b8c1822b827b7d",
+    "helpers_executed": [
+      "warp_affine",
+      "get_preprocess_shape",
+      "get_input_points",
+      "apply_coords",
+      "transform_masks"
+    ],
+    "map_coordinates": "scipy.ndimage.map_coordinates"
+  },
+  "python_environment": {
+    "python": "3.12.11",
+    "numpy": "2.3.2",
+    "scipy": "1.17.0",
+    "lock": "tests/fixtures/m14/python-dependencies.lock"
+  },
+  "cases": {
+    "portrait": {
+      "width": 500,
+      "height": 1000,
+      "encoder_input_sha256": "1b2e6b0c6fb5f34265b4b28515c6592ec2a93e5e601e014c8ed564bc752898b2",
+      "encoder_input_sample_indices": [
+        0,
+        1,
+        2,
+        17,
+        101,
+        997,
+        4096,
+        65535,
+        123456,
+        250000,
+        500000,
+        700000,
+        900000,
+        1200000,
+        1500000,
+        2000000
+      ],
+      "cases": [
+        {
+          "prompt_id": 0,
+          "raw_masks_sha256": "4428bdd84589cf632754259675b80b13e96d909692d88021e470770d4ff4767b",
+          "embedding_sha256": "c4c94c4b2ff9617c74784bf8ebb4258d46cf714e4d669f4096c011635a918aa0",
+          "quality_sha256": "ae2c2e4a7df7e6b0d3601e723c488d404d9e0d2f6d9458fa06f6f5a453001b6a",
+          "low_res_sha256": "f0b4738c30ecb4f9e182a8730293c89e0ce4f43c60dffb2c6e2da25d38e06107",
+          "restored_masks_sha256": "1e12cf21ebedfdde6b3c1218fb960b2a38af82302a513e1374a360497dd843c6",
+          "selected_mask_sha256": "98e3ae7869ffe21c1c3ab0f33bb1e82550484c0262cf9bb061e922d7ecaf8a04",
+          "source_union_sha256": "e8603b35618a5379940de4182adf257a613e173e5b6918ba7dc4073f1fd10224",
+          "sample_indices": {
+            "raw": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000,
+              1200000,
+              1500000,
+              2000000
+            ],
+            "embedding": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000
+            ],
+            "low_res": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456
+            ],
+            "restored": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000,
+              1200000
+            ]
+          }
+        },
+        {
+          "prompt_id": 1,
+          "raw_masks_sha256": "4428bdd84589cf632754259675b80b13e96d909692d88021e470770d4ff4767b",
+          "embedding_sha256": "c4c94c4b2ff9617c74784bf8ebb4258d46cf714e4d669f4096c011635a918aa0",
+          "quality_sha256": "ae2c2e4a7df7e6b0d3601e723c488d404d9e0d2f6d9458fa06f6f5a453001b6a",
+          "low_res_sha256": "f0b4738c30ecb4f9e182a8730293c89e0ce4f43c60dffb2c6e2da25d38e06107",
+          "restored_masks_sha256": "1e12cf21ebedfdde6b3c1218fb960b2a38af82302a513e1374a360497dd843c6",
+          "selected_mask_sha256": "98e3ae7869ffe21c1c3ab0f33bb1e82550484c0262cf9bb061e922d7ecaf8a04",
+          "source_union_sha256": "e8603b35618a5379940de4182adf257a613e173e5b6918ba7dc4073f1fd10224",
+          "sample_indices": {
+            "raw": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000,
+              1200000,
+              1500000,
+              2000000
+            ],
+            "embedding": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000
+            ],
+            "low_res": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456
+            ],
+            "restored": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000,
+              1200000
+            ]
+          }
+        }
+      ]
+    },
+    "landscape": {
+      "width": 1600,
+      "height": 800,
+      "encoder_input_sha256": "4999c7242d1c8d3f1ec7600b4cfdae37ca11383cc3d62fc5114c8eccac45eb94",
+      "encoder_input_sample_indices": [
+        0,
+        1,
+        2,
+        17,
+        101,
+        997,
+        4096,
+        65535,
+        123456,
+        250000,
+        500000,
+        700000,
+        900000,
+        1200000,
+        1500000,
+        2000000
+      ],
+      "cases": [
+        {
+          "prompt_id": 0,
+          "raw_masks_sha256": "4428bdd84589cf632754259675b80b13e96d909692d88021e470770d4ff4767b",
+          "embedding_sha256": "c4c94c4b2ff9617c74784bf8ebb4258d46cf714e4d669f4096c011635a918aa0",
+          "quality_sha256": "ae2c2e4a7df7e6b0d3601e723c488d404d9e0d2f6d9458fa06f6f5a453001b6a",
+          "low_res_sha256": "f0b4738c30ecb4f9e182a8730293c89e0ce4f43c60dffb2c6e2da25d38e06107",
+          "restored_masks_sha256": "f25423e8b9cb7cb23d3440dc75b904d21b115855ed41e4e480dca4709dd74669",
+          "selected_mask_sha256": "0935c5313ec6297e509b1c17869e53768e9c4b13b7c6faa92c34ba08d29803c5",
+          "source_union_sha256": "71c2457b808dc053821c8a7ea5634b7fdcf5e8ae97597dd3c857c8c95820e280",
+          "sample_indices": {
+            "raw": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000,
+              1200000,
+              1500000,
+              2000000
+            ],
+            "embedding": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000
+            ],
+            "low_res": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456
+            ],
+            "restored": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000,
+              1200000,
+              1500000,
+              2000000
+            ]
+          }
+        },
+        {
+          "prompt_id": 1,
+          "raw_masks_sha256": "4428bdd84589cf632754259675b80b13e96d909692d88021e470770d4ff4767b",
+          "embedding_sha256": "c4c94c4b2ff9617c74784bf8ebb4258d46cf714e4d669f4096c011635a918aa0",
+          "quality_sha256": "ae2c2e4a7df7e6b0d3601e723c488d404d9e0d2f6d9458fa06f6f5a453001b6a",
+          "low_res_sha256": "f0b4738c30ecb4f9e182a8730293c89e0ce4f43c60dffb2c6e2da25d38e06107",
+          "restored_masks_sha256": "f25423e8b9cb7cb23d3440dc75b904d21b115855ed41e4e480dca4709dd74669",
+          "selected_mask_sha256": "0935c5313ec6297e509b1c17869e53768e9c4b13b7c6faa92c34ba08d29803c5",
+          "source_union_sha256": "71c2457b808dc053821c8a7ea5634b7fdcf5e8ae97597dd3c857c8c95820e280",
+          "sample_indices": {
+            "raw": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000,
+              1200000,
+              1500000,
+              2000000
+            ],
+            "embedding": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000
+            ],
+            "low_res": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456
+            ],
+            "restored": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000,
+              1200000,
+              1500000,
+              2000000
+            ]
+          }
+        }
+      ]
+    },
+    "square": {
+      "width": 1000,
+      "height": 1000,
+      "encoder_input_sha256": "7976ccaa15e7d8a1cc5a7a32fea9a206f2a169b68d79f05931ba4f328c2563de",
+      "encoder_input_sample_indices": [
+        0,
+        1,
+        2,
+        17,
+        101,
+        997,
+        4096,
+        65535,
+        123456,
+        250000,
+        500000,
+        700000,
+        900000,
+        1200000,
+        1500000,
+        2000000
+      ],
+      "cases": [
+        {
+          "prompt_id": 0,
+          "raw_masks_sha256": "4428bdd84589cf632754259675b80b13e96d909692d88021e470770d4ff4767b",
+          "embedding_sha256": "c4c94c4b2ff9617c74784bf8ebb4258d46cf714e4d669f4096c011635a918aa0",
+          "quality_sha256": "ae2c2e4a7df7e6b0d3601e723c488d404d9e0d2f6d9458fa06f6f5a453001b6a",
+          "low_res_sha256": "f0b4738c30ecb4f9e182a8730293c89e0ce4f43c60dffb2c6e2da25d38e06107",
+          "restored_masks_sha256": "b9ecca0830de6369d9ee00f965b5cfba2e996f0e102e6688ca4e03ae41623f45",
+          "selected_mask_sha256": "4261b0724c44cafc4c7a23a06da59502b57a1a88a6456a667b1350046eb59ade",
+          "source_union_sha256": "65652947f0187dbc1774aae4fcfe47445665a6aa5e684b32c0c2c2397bcfaa35",
+          "sample_indices": {
+            "raw": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000,
+              1200000,
+              1500000,
+              2000000
+            ],
+            "embedding": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000
+            ],
+            "low_res": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456
+            ],
+            "restored": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000,
+              1200000,
+              1500000,
+              2000000
+            ]
+          }
+        },
+        {
+          "prompt_id": 1,
+          "raw_masks_sha256": "4428bdd84589cf632754259675b80b13e96d909692d88021e470770d4ff4767b",
+          "embedding_sha256": "c4c94c4b2ff9617c74784bf8ebb4258d46cf714e4d669f4096c011635a918aa0",
+          "quality_sha256": "ae2c2e4a7df7e6b0d3601e723c488d404d9e0d2f6d9458fa06f6f5a453001b6a",
+          "low_res_sha256": "f0b4738c30ecb4f9e182a8730293c89e0ce4f43c60dffb2c6e2da25d38e06107",
+          "restored_masks_sha256": "b9ecca0830de6369d9ee00f965b5cfba2e996f0e102e6688ca4e03ae41623f45",
+          "selected_mask_sha256": "4261b0724c44cafc4c7a23a06da59502b57a1a88a6456a667b1350046eb59ade",
+          "source_union_sha256": "65652947f0187dbc1774aae4fcfe47445665a6aa5e684b32c0c2c2397bcfaa35",
+          "sample_indices": {
+            "raw": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000,
+              1200000,
+              1500000,
+              2000000
+            ],
+            "embedding": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000
+            ],
+            "low_res": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456
+            ],
+            "restored": [
+              0,
+              1,
+              2,
+              17,
+              101,
+              997,
+              4096,
+              65535,
+              123456,
+              250000,
+              500000,
+              700000,
+              900000,
+              1200000,
+              1500000,
+              2000000
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "runs": 2,
+  "artifacts": {
+    "portrait-encoder_input.samples.f32le": {
+      "bytes": 64,
+      "sha256": "3041dcacfc308f612372633f3737c9e33d4b0d51cf7166bccf405e7c6f3ad05a"
+    },
+    "portrait-case-0-encoded_coords.f32le": {
+      "bytes": 40,
+      "sha256": "f347b1cef5a154721922347ba9ed4176bad196e28b4c04577303b20ebde664ed"
+    },
+    "portrait-case-0-labels.f32le": {
+      "bytes": 20,
+      "sha256": "573b4ced5f98f0424c553633c06d2d80a7b7e59ab727227981313c0721f5895a"
+    },
+    "portrait-case-0-raw_masks.samples.f32le": {
+      "bytes": 64,
+      "sha256": "36d47029bcd26774c255e81a79c0b398e7323e4369eacdc8956151e8c3008893"
+    },
+    "portrait-case-0-embedding.samples.f32le": {
+      "bytes": 52,
+      "sha256": "d20bb46ea26caf70953c00c794b062e2da030091a58063c8400bfc6f65766654"
+    },
+    "portrait-case-0-quality.f32le": {
+      "bytes": 12,
+      "sha256": "ae2c2e4a7df7e6b0d3601e723c488d404d9e0d2f6d9458fa06f6f5a453001b6a"
+    },
+    "portrait-case-0-low_res.samples.f32le": {
+      "bytes": 36,
+      "sha256": "46f2a7b846bcb343249ec477969f560ef6459e4afcfdca9302f057b368c71edf"
+    },
+    "portrait-case-0-restored_masks.samples.f32le": {
+      "bytes": 56,
+      "sha256": "a678b55f69c809cce4c65af6d61b88080a8274133914d7fba301e4be7a8b5d6a"
+    },
+    "portrait-case-0-mask_input_no_prior.samples.f32le": {
+      "bytes": 32,
+      "sha256": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
+    },
+    "portrait-case-0-mask_input_prior.samples.f32le": {
+      "bytes": 32,
+      "sha256": "6a7182e02ae54b1296e00b49272bc54514978ee5fa61a86c18e7af5b4dfa8793"
+    },
+    "portrait-case-0-selected_mask.bits": {
+      "bytes": 62500,
+      "sha256": "46bc66252f7ccdf557c71795c1b8c0fb6aa2e769e3dce35323d492cd3db0c89a"
+    },
+    "portrait-case-0-source_union.bits": {
+      "bytes": 62500,
+      "sha256": "3f8bee7d0500bba292bea2b2de6759ce5c0f91ebbb11163e9748e30583e70e41"
+    },
+    "portrait-case-1-encoded_coords.f32le": {
+      "bytes": 16,
+      "sha256": "a0cddad1fc3559eea10b65386d6af8af03d671762f7f251b8895b5d0a6b66717"
+    },
+    "portrait-case-1-labels.f32le": {
+      "bytes": 8,
+      "sha256": "dee9bee38d8ce139ee23552fc0ca83067114ae903518d7711ba7937b72c0d697"
+    },
+    "portrait-case-1-raw_masks.samples.f32le": {
+      "bytes": 64,
+      "sha256": "36d47029bcd26774c255e81a79c0b398e7323e4369eacdc8956151e8c3008893"
+    },
+    "portrait-case-1-embedding.samples.f32le": {
+      "bytes": 52,
+      "sha256": "d20bb46ea26caf70953c00c794b062e2da030091a58063c8400bfc6f65766654"
+    },
+    "portrait-case-1-quality.f32le": {
+      "bytes": 12,
+      "sha256": "ae2c2e4a7df7e6b0d3601e723c488d404d9e0d2f6d9458fa06f6f5a453001b6a"
+    },
+    "portrait-case-1-low_res.samples.f32le": {
+      "bytes": 36,
+      "sha256": "46f2a7b846bcb343249ec477969f560ef6459e4afcfdca9302f057b368c71edf"
+    },
+    "portrait-case-1-restored_masks.samples.f32le": {
+      "bytes": 56,
+      "sha256": "a678b55f69c809cce4c65af6d61b88080a8274133914d7fba301e4be7a8b5d6a"
+    },
+    "portrait-case-1-mask_input_no_prior.samples.f32le": {
+      "bytes": 32,
+      "sha256": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
+    },
+    "portrait-case-1-mask_input_prior.samples.f32le": {
+      "bytes": 32,
+      "sha256": "6a7182e02ae54b1296e00b49272bc54514978ee5fa61a86c18e7af5b4dfa8793"
+    },
+    "portrait-case-1-selected_mask.bits": {
+      "bytes": 62500,
+      "sha256": "46bc66252f7ccdf557c71795c1b8c0fb6aa2e769e3dce35323d492cd3db0c89a"
+    },
+    "portrait-case-1-source_union.bits": {
+      "bytes": 62500,
+      "sha256": "3f8bee7d0500bba292bea2b2de6759ce5c0f91ebbb11163e9748e30583e70e41"
+    },
+    "landscape-encoder_input.samples.f32le": {
+      "bytes": 64,
+      "sha256": "08c45a79702fb260a1d9e4de278c0b6e706969f044b031db33e36cf0123a20db"
+    },
+    "landscape-case-0-encoded_coords.f32le": {
+      "bytes": 40,
+      "sha256": "31119fa83af63d364b570a0de21bc58176b81e867676f7e6e91f11c331a48663"
+    },
+    "landscape-case-0-labels.f32le": {
+      "bytes": 20,
+      "sha256": "573b4ced5f98f0424c553633c06d2d80a7b7e59ab727227981313c0721f5895a"
+    },
+    "landscape-case-0-raw_masks.samples.f32le": {
+      "bytes": 64,
+      "sha256": "36d47029bcd26774c255e81a79c0b398e7323e4369eacdc8956151e8c3008893"
+    },
+    "landscape-case-0-embedding.samples.f32le": {
+      "bytes": 52,
+      "sha256": "d20bb46ea26caf70953c00c794b062e2da030091a58063c8400bfc6f65766654"
+    },
+    "landscape-case-0-quality.f32le": {
+      "bytes": 12,
+      "sha256": "ae2c2e4a7df7e6b0d3601e723c488d404d9e0d2f6d9458fa06f6f5a453001b6a"
+    },
+    "landscape-case-0-low_res.samples.f32le": {
+      "bytes": 36,
+      "sha256": "46f2a7b846bcb343249ec477969f560ef6459e4afcfdca9302f057b368c71edf"
+    },
+    "landscape-case-0-restored_masks.samples.f32le": {
+      "bytes": 64,
+      "sha256": "4782b78f3448c76451b18a519c5b289d9d2df6511ded4f294226b9d1fcead57c"
+    },
+    "landscape-case-0-mask_input_no_prior.samples.f32le": {
+      "bytes": 32,
+      "sha256": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
+    },
+    "landscape-case-0-mask_input_prior.samples.f32le": {
+      "bytes": 32,
+      "sha256": "6a7182e02ae54b1296e00b49272bc54514978ee5fa61a86c18e7af5b4dfa8793"
+    },
+    "landscape-case-0-selected_mask.bits": {
+      "bytes": 160000,
+      "sha256": "4ad9bec9d632c8378455028f24dd3b0f8062ab0b0b2785a9f49bb663173ae93c"
+    },
+    "landscape-case-0-source_union.bits": {
+      "bytes": 160000,
+      "sha256": "dfeb1d24394b7a5d1a9b8cc58a39c7e05e3b464be96cbcc473916c61feba5524"
+    },
+    "landscape-case-1-encoded_coords.f32le": {
+      "bytes": 16,
+      "sha256": "ee5c810484cf6b681b53cfeb92d9c55bebc7fd08b88ffacf8fb216a45e486109"
+    },
+    "landscape-case-1-labels.f32le": {
+      "bytes": 8,
+      "sha256": "dee9bee38d8ce139ee23552fc0ca83067114ae903518d7711ba7937b72c0d697"
+    },
+    "landscape-case-1-raw_masks.samples.f32le": {
+      "bytes": 64,
+      "sha256": "36d47029bcd26774c255e81a79c0b398e7323e4369eacdc8956151e8c3008893"
+    },
+    "landscape-case-1-embedding.samples.f32le": {
+      "bytes": 52,
+      "sha256": "d20bb46ea26caf70953c00c794b062e2da030091a58063c8400bfc6f65766654"
+    },
+    "landscape-case-1-quality.f32le": {
+      "bytes": 12,
+      "sha256": "ae2c2e4a7df7e6b0d3601e723c488d404d9e0d2f6d9458fa06f6f5a453001b6a"
+    },
+    "landscape-case-1-low_res.samples.f32le": {
+      "bytes": 36,
+      "sha256": "46f2a7b846bcb343249ec477969f560ef6459e4afcfdca9302f057b368c71edf"
+    },
+    "landscape-case-1-restored_masks.samples.f32le": {
+      "bytes": 64,
+      "sha256": "4782b78f3448c76451b18a519c5b289d9d2df6511ded4f294226b9d1fcead57c"
+    },
+    "landscape-case-1-mask_input_no_prior.samples.f32le": {
+      "bytes": 32,
+      "sha256": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
+    },
+    "landscape-case-1-mask_input_prior.samples.f32le": {
+      "bytes": 32,
+      "sha256": "6a7182e02ae54b1296e00b49272bc54514978ee5fa61a86c18e7af5b4dfa8793"
+    },
+    "landscape-case-1-selected_mask.bits": {
+      "bytes": 160000,
+      "sha256": "4ad9bec9d632c8378455028f24dd3b0f8062ab0b0b2785a9f49bb663173ae93c"
+    },
+    "landscape-case-1-source_union.bits": {
+      "bytes": 160000,
+      "sha256": "dfeb1d24394b7a5d1a9b8cc58a39c7e05e3b464be96cbcc473916c61feba5524"
+    },
+    "square-encoder_input.samples.f32le": {
+      "bytes": 64,
+      "sha256": "9e1ff9dc5e9893d0f120a04709ead34769d9362f0810147446b5eabc7785858b"
+    },
+    "square-case-0-encoded_coords.f32le": {
+      "bytes": 40,
+      "sha256": "06fa48ea1f8f13c63dd0c0edaeb7a5e199bdf708b6303cf9df13c628abf49aa7"
+    },
+    "square-case-0-labels.f32le": {
+      "bytes": 20,
+      "sha256": "573b4ced5f98f0424c553633c06d2d80a7b7e59ab727227981313c0721f5895a"
+    },
+    "square-case-0-raw_masks.samples.f32le": {
+      "bytes": 64,
+      "sha256": "36d47029bcd26774c255e81a79c0b398e7323e4369eacdc8956151e8c3008893"
+    },
+    "square-case-0-embedding.samples.f32le": {
+      "bytes": 52,
+      "sha256": "d20bb46ea26caf70953c00c794b062e2da030091a58063c8400bfc6f65766654"
+    },
+    "square-case-0-quality.f32le": {
+      "bytes": 12,
+      "sha256": "ae2c2e4a7df7e6b0d3601e723c488d404d9e0d2f6d9458fa06f6f5a453001b6a"
+    },
+    "square-case-0-low_res.samples.f32le": {
+      "bytes": 36,
+      "sha256": "46f2a7b846bcb343249ec477969f560ef6459e4afcfdca9302f057b368c71edf"
+    },
+    "square-case-0-restored_masks.samples.f32le": {
+      "bytes": 64,
+      "sha256": "7e2adde894b72d2077d5b1846468e28006464bc1087f7c826a8eb2c43cbee66e"
+    },
+    "square-case-0-mask_input_no_prior.samples.f32le": {
+      "bytes": 32,
+      "sha256": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
+    },
+    "square-case-0-mask_input_prior.samples.f32le": {
+      "bytes": 32,
+      "sha256": "6a7182e02ae54b1296e00b49272bc54514978ee5fa61a86c18e7af5b4dfa8793"
+    },
+    "square-case-0-selected_mask.bits": {
+      "bytes": 125000,
+      "sha256": "ca7b81ddabe14ef430e5f6184d095c422a24e29e27aee41aa8b800593f7eae7a"
+    },
+    "square-case-0-source_union.bits": {
+      "bytes": 125000,
+      "sha256": "6e48d9581af46e8cd0b6d01e57b71c012bb25bf9a8ed04df81e8ba2beaabe844"
+    },
+    "square-case-1-encoded_coords.f32le": {
+      "bytes": 16,
+      "sha256": "d5ee7b3662e2502745a9bf95dd276edec38dbbd9dcf41af487bcc66fccb269c9"
+    },
+    "square-case-1-labels.f32le": {
+      "bytes": 8,
+      "sha256": "dee9bee38d8ce139ee23552fc0ca83067114ae903518d7711ba7937b72c0d697"
+    },
+    "square-case-1-raw_masks.samples.f32le": {
+      "bytes": 64,
+      "sha256": "36d47029bcd26774c255e81a79c0b398e7323e4369eacdc8956151e8c3008893"
+    },
+    "square-case-1-embedding.samples.f32le": {
+      "bytes": 52,
+      "sha256": "d20bb46ea26caf70953c00c794b062e2da030091a58063c8400bfc6f65766654"
+    },
+    "square-case-1-quality.f32le": {
+      "bytes": 12,
+      "sha256": "ae2c2e4a7df7e6b0d3601e723c488d404d9e0d2f6d9458fa06f6f5a453001b6a"
+    },
+    "square-case-1-low_res.samples.f32le": {
+      "bytes": 36,
+      "sha256": "46f2a7b846bcb343249ec477969f560ef6459e4afcfdca9302f057b368c71edf"
+    },
+    "square-case-1-restored_masks.samples.f32le": {
+      "bytes": 64,
+      "sha256": "7e2adde894b72d2077d5b1846468e28006464bc1087f7c826a8eb2c43cbee66e"
+    },
+    "square-case-1-mask_input_no_prior.samples.f32le": {
+      "bytes": 32,
+      "sha256": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
+    },
+    "square-case-1-mask_input_prior.samples.f32le": {
+      "bytes": 32,
+      "sha256": "6a7182e02ae54b1296e00b49272bc54514978ee5fa61a86c18e7af5b4dfa8793"
+    },
+    "square-case-1-selected_mask.bits": {
+      "bytes": 125000,
+      "sha256": "ca7b81ddabe14ef430e5f6184d095c422a24e29e27aee41aa8b800593f7eae7a"
+    },
+    "square-case-1-source_union.bits": {
+      "bytes": 125000,
+      "sha256": "6e48d9581af46e8cd0b6d01e57b71c012bb25bf9a8ed04df81e8ba2beaabe844"
+    }
+  },
+  "decoder_contract": {
+    "point_coords": "[1,N,2]",
+    "point_labels": "[1,N]",
+    "mask_input": "[1,1,256,256]",
+    "has_mask_input": "[1]",
+    "orig_im_size": [
+      684,
+      1024
+    ],
+    "masks": "[1,3,684,1024]",
+    "iou_predictions": "[1,3]",
+    "low_res_masks": "[1,3,256,256]"
+  },
+  "assistance_mode": "manual prompted fixture",
+  "assistance_classification": {
+    "manual": "assisted-non-automatic",
+    "centre-default-assisted": "assisted-non-automatic",
+    "auto-derived-assisted": "automatic-derived; requires explicit pipeline declaration"
+  }
+}

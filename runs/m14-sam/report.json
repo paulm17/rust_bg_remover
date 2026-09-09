@@ -1,0 +1,63 @@
+{
+  "schema": "m14.sam.report.v1",
+  "status": "source-contract-pass-rust-fixture-consumed-real-weights-unavailable",
+  "assistance_mode": "manual prompted SAM fixture",
+  "assistance_classification": {
+    "manual": "assisted-non-automatic",
+    "centre-default-assisted": "assisted-non-automatic",
+    "auto-derived-assisted": "automatic-derived; eligible only with explicit pipeline declaration"
+  },
+  "authority": {
+    "implementation": "projects/python/rembg/rembg/sessions/sam.py",
+    "commit": "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709",
+    "sha256": "524bccb7b54acd3979d025e0451334e7a9d0d7e4cd4ce81007b8c1822b827b7d"
+  },
+  "authority_execution": {
+    "runs": 2,
+    "reference_report_sha256": "48cac997360ce37eb72de7891bcc30de2358ec3bf1cb948875b7583ec6a32b23",
+    "python_environment": {"python": "3.12.11", "numpy": "2.3.2", "scipy": "1.17.0", "lock": "tests/fixtures/m14/python-dependencies.lock"},
+    "rust_fixture_consumer": "bgremove-ort::sam::pinned_python_fixture_is_consumed_for_prompt_and_mask_stages",
+    "compared_stages": ["encoder_input_full_digest", "both_prompt_cases", "no_prior", "iterative_prior", "raw_logits_samples_from_candidates", "quality", "low_res_samples_from_candidates", "restored_logits_samples", "highest_quality_selected_mask", "source_union"],
+    "exact_full_digest_stages": ["encoder_input", "selected_mask", "source_union"],
+    "sampled_tensor_stages": ["raw_logits", "embedding", "low_res_logits", "restored_logits"]
+  },
+  "real_weight_gate": {
+    "status": "unavailable",
+    "reason": "approved local SAM encoder/decoder weights are not provisioned",
+    "download_attempted": false,
+    "synthetic_equivalent": true,
+    "synthetic_pair": ["models/fixtures/sam_synthetic_encoder.onnx", "models/fixtures/sam_synthetic_decoder.onnx"],
+    "synthetic_pair_smoke": {
+      "status": "pass",
+      "runtime_basename": "libonnxruntime.1.23.2.dylib",
+      "runtime_sha256": "92500010659b052368797e30c1841956b0efd699a8061ef8b3b25f27449c86e7",
+      "onnxruntime_version": "1.23.2",
+      "platform": "macOS arm64; Rust workspace toolchain",
+      "runs": 2,
+      "stdout_sha256": "e3960fd04f0cde8d70c5ddc2d401e6ffaeb19ef361f8175cf583ff251349e5f0",
+      "observed": "candidates=3 selected=Some(1)"
+    },
+    "model_sha256": {
+      "encoder": "a16742242d26b06f4a86baba638593424b3cee60bb9be0a3b389716442173271",
+      "decoder": "d1c1c4ff3ffd8cd924a23db8541356d5d8458ad8c8132decfbf4a064167e4f2d"
+    }
+  },
+  "source_contract_gate": {
+    "status": "pass",
+    "rust_consumes_fixture": true,
+    "all_geometries_and_prompt_cases": true,
+    "final_selected_and_source_union_compared": true,
+    "rust_comparison_tolerance": {"encoder_input": 0.0, "prompt_coords": 0.001, "raw_logits": 0.000002, "restored_logits": 0.0002, "quality": 0.0, "final_masks": 0.0}
+  },
+  "contracts": {
+    "variants": ["sam_vit_b_01ec64", "sam_vit_l_0b3195", "sam_vit_h_4b8939"],
+    "encodings": ["fp32", "quantized"],
+    "prompt_labels": {"positive": 1, "negative": 0, "box_start": 2, "box_end": 3, "padding": -1},
+    "prior_shape": [1, 1, 256, 256],
+    "selection_default": "highest-quality",
+    "source_union": "explicit parity-only policy"
+  },
+  "fixture": "tests/fixtures/m14/reference/report.json",
+  "tracked_m14_evidence": {"bytes": 1484579, "files": 94},
+  "rust_tests": {"sam_geometry_prompt_selection": "pass", "manifest_fail_closed": "pass"}
+}

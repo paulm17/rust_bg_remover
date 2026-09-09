@@ -148,6 +148,11 @@ pub struct ModelManifest {
     pub model_domain: String,
     pub file: String,
     pub sha256: String,
+    /// Upstream release checksum when the external asset is not locally
+    /// provisioned.  M14 records rembg's published MD5 in addition to the
+    /// fail-closed local SHA-256 field above.
+    #[serde(default)]
+    pub release_checksum: String,
     pub input_name: String,
     pub output_name: String,
     pub layout: ModelLayout,
@@ -193,6 +198,17 @@ pub struct ModelManifest {
     pub auxiliary_input_names: Vec<String>,
     #[serde(default)]
     pub auxiliary_input_shapes: Vec<Vec<DimensionSpec>>,
+    /// External model sidecars required before a verified session may open.
+    /// M14 uses this for the three published ViT-H encoder data shards and
+    /// rembg's assembled combined sidecar.
+    #[serde(default)]
+    pub companion_files: Vec<String>,
+    #[serde(default)]
+    pub companion_sha256: Vec<String>,
+    #[serde(default)]
+    pub companion_release_checksums: Vec<String>,
+    #[serde(default)]
+    pub companion_source_checksums: Vec<String>,
     #[serde(default)]
     pub input_type: Option<TensorElementType>,
     #[serde(default)]
@@ -255,13 +271,14 @@ impl ModelManifest {
             }
             ("fba", _) => workspace.join("projects/python/image-background-remove-tool"),
             ("vitmatte", _) => workspace.join("projects/python/rembg"),
+            ("sam", _) => workspace.join("projects/python/rembg"),
             _ => workspace.join("projects/javascript/background-removal-js"),
         };
         let allowed = match kind {
             "license"
                 if matches!(
                     self.algorithm_family.as_str(),
-                    "birefnet" | "rmbg" | "fba" | "vitmatte"
+                    "birefnet" | "rmbg" | "fba" | "vitmatte" | "sam"
                 ) =>
             {
                 workspace.to_path_buf()
@@ -277,6 +294,7 @@ impl ModelManifest {
                         | "tracer-b7"
                         | "fba"
                         | "vitmatte"
+                        | "sam"
                 ) =>
             {
                 root.clone()
@@ -465,6 +483,40 @@ impl ModelManifest {
             "auxiliary input names/shapes length mismatch"
         );
         ensure!(
+            self.companion_files.len() == self.companion_sha256.len()
+                && self.companion_files.len() == self.companion_release_checksums.len(),
+            "companion file/checksum metadata length mismatch"
+        );
+        ensure!(
+            self.companion_source_checksums
+                .iter()
+                .all(|checksum| { checksum.starts_with("md5:") && checksum.len() == 36 }),
+            "companion source checksum metadata is malformed"
+        );
+        for (index, companion) in self.companion_files.iter().enumerate() {
+            ensure!(
+                !companion.trim().is_empty(),
+                "companion file {index} is empty"
+            );
+            ensure!(
+                !companion.starts_with('/') && !companion.contains('\\'),
+                "companion file {index} has an invalid path"
+            );
+            let sha256 = &self.companion_sha256[index];
+            ensure!(
+                sha256 == "unavailable"
+                    || (sha256.len() == 64
+                        && sha256
+                            .bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())),
+                "companion file {index} has malformed SHA-256 metadata"
+            );
+            ensure!(
+                !self.companion_release_checksums[index].trim().is_empty(),
+                "companion file {index} is missing its upstream checksum"
+            );
+        }
+        ensure!(
             self.auxiliary_input_names
                 .iter()
                 .all(|name| !name.trim().is_empty()),
@@ -540,7 +592,53 @@ impl ModelManifest {
             self.sha256,
             actual
         );
+        self.verify_companion_hashes(manifest_path)?;
         Ok(path)
+    }
+
+    fn verify_companion_hashes(&self, manifest_path: &Path) -> Result<()> {
+        let base = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+        let canonical_base = base.canonicalize()?;
+        for (index, (file, expected)) in self
+            .companion_files
+            .iter()
+            .zip(self.companion_sha256.iter())
+            .enumerate()
+        {
+            ensure!(
+                expected != "unavailable",
+                "model {} companion {} has no locally available hash",
+                self.id,
+                index
+            );
+            let path = base.join(file).canonicalize().with_context(|| {
+                format!("model {} companion {} is not provisioned", self.id, file)
+            })?;
+            if self.external {
+                self.external_allowed(base, &path, "model")?;
+            } else {
+                ensure!(
+                    path.starts_with(&canonical_base),
+                    "model {} companion {} escapes its manifest directory",
+                    self.id,
+                    file
+                );
+            }
+            let digest = sha2::Sha256::digest(std::fs::read(&path)?);
+            let actual = digest
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            ensure!(
+                actual == *expected,
+                "model {} companion {} hash mismatch: expected {}, actual {}",
+                self.id,
+                file,
+                expected,
+                actual
+            );
+        }
+        Ok(())
     }
 }
 
@@ -870,6 +968,96 @@ mod tests {
             error.contains("No such file") || error.contains("cannot canonicalize"),
             "test must reach the absent external checkpoint after licence validation: {error}"
         );
+    }
+
+    #[test]
+    fn m14_sam_registry_is_complete_and_fail_closed_without_weights() {
+        let paths = [
+            "../../models/m14_sam_vit_b_encoder.toml",
+            "../../models/m14_sam_vit_b_decoder.toml",
+            "../../models/m14_sam_vit_b_quant_encoder.toml",
+            "../../models/m14_sam_vit_b_quant_decoder.toml",
+            "../../models/m14_sam_vit_l_encoder.toml",
+            "../../models/m14_sam_vit_l_decoder.toml",
+            "../../models/m14_sam_vit_l_quant_encoder.toml",
+            "../../models/m14_sam_vit_l_quant_decoder.toml",
+            "../../models/m14_sam_vit_h_encoder.toml",
+            "../../models/m14_sam_vit_h_decoder.toml",
+            "../../models/m14_sam_vit_h_quant_encoder.toml",
+            "../../models/m14_sam_vit_h_quant_decoder.toml",
+        ];
+        let manifests = paths
+            .iter()
+            .map(|path| parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(manifests.len(), 12);
+        assert!(manifests.iter().all(|manifest| {
+            manifest.algorithm_family == "sam"
+                && manifest.external
+                && !manifest.intended_use_approved
+                && manifest.sha256 == "unavailable"
+                && manifest.release_checksum.starts_with("md5:")
+                && manifest.release_checksum.len() == 36
+                && manifest.source_commit == "030a9ed79dbfcf8c58a1dc15a8dca3ccd2355709"
+        }));
+        let h_encoder = &manifests[8];
+        assert_eq!(h_encoder.companion_files.len(), 1);
+        assert_eq!(h_encoder.companion_release_checksums.len(), 1);
+        assert_eq!(h_encoder.companion_source_checksums.len(), 3);
+        assert!(h_encoder
+            .companion_source_checksums
+            .iter()
+            .all(|checksum| checksum.starts_with("md5:") && checksum.len() == 36));
+        let h_quant_encoder = &manifests[10];
+        assert!(
+            h_quant_encoder.companion_files.is_empty(),
+            "rembg only assembles encoder_data.bin for the H fp32 encoder"
+        );
+        assert_eq!(
+            manifests
+                .iter()
+                .map(|manifest| manifest.model_variant.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["sam_vit_b_01ec64", "sam_vit_l_0b3195", "sam_vit_h_4b8939"]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+        for path in paths {
+            let manifest = parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap();
+            let error = manifest
+                .verify_model_hash(std::path::Path::new(path))
+                .unwrap_err();
+            assert!(error.to_string().contains("not approved for intended use"));
+        }
+    }
+
+    #[test]
+    fn m14_synthetic_pair_is_hash_verified_and_approved() {
+        for path in [
+            "../../models/m14_sam_synthetic_encoder.toml",
+            "../../models/m14_sam_synthetic_decoder.toml",
+        ] {
+            let manifest = parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap();
+            assert!(manifest.intended_use_approved && !manifest.external);
+            assert!(manifest
+                .verify_model_hash(std::path::Path::new(path))
+                .is_ok());
+        }
+    }
+
+    #[test]
+    fn m14_companion_sidecars_fail_closed_when_missing_or_tampered() {
+        let path = std::path::Path::new("../../models/m14_sam_synthetic_encoder.toml");
+        let mut manifest = parse_toml(&std::fs::read_to_string(path).unwrap()).unwrap();
+        manifest.companion_files = vec!["fixtures/sam_synthetic_encoder.onnx".into()];
+        manifest.companion_sha256 = vec![manifest.sha256.clone()];
+        manifest.companion_release_checksums = vec!["synthetic-sha256".into()];
+        assert!(manifest.verify_companion_hashes(path).is_ok());
+        manifest.companion_files = vec!["fixtures/does-not-exist.onnx".into()];
+        assert!(manifest.verify_companion_hashes(path).is_err());
+        manifest.companion_files = vec!["fixtures/sam_synthetic_encoder.onnx".into()];
+        manifest.companion_sha256 = vec!["00".repeat(32)];
+        assert!(manifest.verify_companion_hashes(path).is_err());
     }
 
     #[test]

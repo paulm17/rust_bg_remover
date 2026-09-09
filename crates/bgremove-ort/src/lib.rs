@@ -14,6 +14,8 @@ use std::{
     sync::{Arc, Condvar, Mutex, OnceLock},
 };
 
+pub mod sam;
+
 /// The byte resize used by @imgly/background-removal. It deliberately uses
 /// corner-aligned coordinates (`x * src/new`) and rounds each interpolated
 /// uint8 channel, including the border. This is not image-crate's half-pixel
@@ -2047,6 +2049,150 @@ impl VerifiedSession {
             shape: shape.to_vec(),
             values: data.to_vec(),
         })
+    }
+
+    /// Run a verified graph with its complete named input set and return all
+    /// requested outputs.  SAM is a two-session model whose decoder has six
+    /// inputs (one primary embedding plus five auxiliary inputs) and three
+    /// outputs; keeping this primitive here means the SAM
+    /// adapter cannot bypass the same metadata, finite-value, and allocation
+    /// checks used by the single-input adapters.
+    pub fn run_named(
+        &mut self,
+        inputs: &[(&str, &[i64], &[f32])],
+        output_names: &[&str],
+    ) -> Result<Vec<TensorOutput>> {
+        ensure!(
+            !inputs.is_empty(),
+            "model {} requires at least one named input",
+            self.manifest.id
+        );
+        let expected_names = self
+            .session
+            .inputs()
+            .iter()
+            .map(|input| input.name().to_owned())
+            .collect::<Vec<_>>();
+        ensure!(
+            inputs.len() == expected_names.len(),
+            "model {} input count mismatch: expected {:?}, actual {:?}",
+            self.manifest.id,
+            expected_names,
+            inputs.iter().map(|(name, _, _)| *name).collect::<Vec<_>>()
+        );
+        let mut names = inputs
+            .iter()
+            .map(|(name, _, _)| (*name).to_owned())
+            .collect::<Vec<_>>();
+        let mut sorted = names.clone();
+        sorted.sort();
+        let mut expected_sorted = expected_names.clone();
+        expected_sorted.sort();
+        ensure!(
+            sorted == expected_sorted && sorted.windows(2).all(|pair| pair[0] != pair[1]),
+            "model {} named inputs must exactly match {:?}, actual {:?}",
+            self.manifest.id,
+            expected_names,
+            names
+        );
+
+        let mut tensors = Vec::with_capacity(inputs.len());
+        for (name, shape, values) in inputs {
+            ensure!(
+                !shape.is_empty() && shape.iter().all(|dimension| *dimension > 0),
+                "model {} input {} has invalid shape {:?}",
+                self.manifest.id,
+                name,
+                shape
+            );
+            let expected = self
+                .session
+                .inputs()
+                .iter()
+                .find(|input| input.name() == *name)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("model {} input {} is not declared", self.manifest.id, name)
+                })?;
+            let expected_shape = match expected.dtype() {
+                ort::value::ValueType::Tensor { shape, .. } => shape,
+                other => bail!(
+                    "model {} input {} is not a tensor: {}",
+                    self.manifest.id,
+                    name,
+                    other
+                ),
+            };
+            ensure!(
+                expected_shape.len() == shape.len()
+                    && expected_shape
+                        .iter()
+                        .zip(shape.iter())
+                        .all(|(want, got)| *want < 0 || *want == *got),
+                "model {} input {} shape mismatch: expected {:?}, actual {:?}",
+                self.manifest.id,
+                name,
+                expected_shape,
+                shape
+            );
+            ensure!(
+                checked_numel(shape, "named input")? == values.len(),
+                "model {} input {} value count mismatch",
+                self.manifest.id,
+                name
+            );
+            ensure!(
+                values.iter().all(|value| value.is_finite()),
+                "model {} input {} contains NaN/Inf",
+                self.manifest.id,
+                name
+            );
+            tensors.push((
+                (*name).to_owned(),
+                Tensor::from_array((shape.to_vec(), values.to_vec()))?,
+            ));
+        }
+        let outputs = self.session.run(tensors)?;
+        self.run_count += 1;
+        let mut result = Vec::with_capacity(output_names.len());
+        for name in output_names {
+            ensure!(!name.trim().is_empty(), "requested output name is empty");
+            let output = outputs.get(*name).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "model {} declared output {} not returned; available {:?}",
+                    self.manifest.id,
+                    name,
+                    outputs.keys().collect::<Vec<_>>()
+                )
+            })?;
+            let (shape, data) = output.try_extract_tensor::<f32>().with_context(|| {
+                format!("model {} output {} must be f32", self.manifest.id, name)
+            })?;
+            ensure!(
+                data.iter().all(|value| value.is_finite()),
+                "model {} output {} contains NaN/Inf",
+                self.manifest.id,
+                name
+            );
+            ensure!(
+                !shape.is_empty() && shape.iter().all(|dimension| *dimension > 0),
+                "model {} output {} has invalid shape {:?}",
+                self.manifest.id,
+                name,
+                shape
+            );
+            ensure!(
+                checked_numel(shape, "named output")? == data.len(),
+                "model {} output {} shape/value mismatch",
+                self.manifest.id,
+                name
+            );
+            result.push(TensorOutput {
+                shape: shape.to_vec(),
+                values: data.to_vec(),
+            });
+        }
+        names.clear();
+        Ok(result)
     }
     pub fn run_four(&mut self, inputs: [(&str, &[i64], &[f32]); 4]) -> Result<TensorOutput> {
         ensure!(

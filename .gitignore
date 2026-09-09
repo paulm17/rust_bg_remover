@@ -31,6 +31,8 @@
 !/runs/m12-vitmatte/authority/*
 !/runs/m13-foreground/
 !/runs/m13-foreground/report.json
+!/runs/m14-sam/
+!/runs/m14-sam/report.json
 /models/*.onnx
 /models/*.ort
 !/models/fixtures/
