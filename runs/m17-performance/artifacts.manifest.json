@@ -1,0 +1,48 @@
+{
+  "entries": [
+    {
+      "path": ".m17-owned",
+      "sha256": "299d7d9d9b0a16bb38d0215375e7bd5219b6cb2081145a2c2f1897f122522b02"
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "10882d0b25a42face0602c462f30c3ac0e7c0fa285522353990e6ea31620040f"
+    },
+    {
+      "path": "THIRD-PARTY-NOTICES.txt",
+      "sha256": "343269d968cfbc4ae975293749fad07f6fa120ee16a31666844b784a88ba30dc"
+    },
+    {
+      "path": "code-dependencies.json",
+      "sha256": "7811915a4e8e67e9179a02c88d8e50e12fc362eb71dbb7ac0c9a199ddfa385bc"
+    },
+    {
+      "path": "model-bom.json",
+      "sha256": "2fe0ffdd8fc91a8da77e86d0a0219b469f624ab04ca0a346d6b8a125a6dbe578"
+    },
+    {
+      "path": "model-manifests/m4_isnet_fp32.toml",
+      "sha256": "d16d91bb05f13639b6402ae39f7c9849c3872f27231f4336a2d9123627db2212"
+    },
+    {
+      "path": "model-manifests/m5_u2net.toml",
+      "sha256": "2e3311e3f65b00a401c73b2081e817896e75175a0400cc479da9d32e9c2eb8bd"
+    },
+    {
+      "path": "model-manifests/m6_tracer_b7.toml",
+      "sha256": "369d5791070970973808797cd2e7dd61c0bfa0fac5a6ff1ffa67bb95209421d5"
+    },
+    {
+      "path": "model-manifests/m7_birefnet_general.toml",
+      "sha256": "eecd5b3c670d5d38ecab0e68ea56d87dde9aa3a519be5d2b569ad03bc3271cf3"
+    },
+    {
+      "path": "report.json",
+      "sha256": "79afa03bbd600364e2e720cf683468c6112ad8c58037b0070906c071eafb8010"
+    },
+    {
+      "path": "report.sha256",
+      "sha256": "07c976dec8785a89edab8aa71067e6ee797f51a552d81b4cfd50ee6ed60dbf33"
+    }
+  ]
+}

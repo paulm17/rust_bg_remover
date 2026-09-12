@@ -1,6 +1,7 @@
 // M0 corpus validator and M2 deterministic benchmark implementation.
 mod m15;
 mod m16;
+mod m17;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use bgremove_color::OriginalRgbEstimator;
@@ -237,6 +238,24 @@ enum Command {
     M16Smoke {
         #[arg(long, default_value = "runs/m16-hybrid")]
         output: PathBuf,
+    },
+    /// Benchmark CPU first, then explicitly requested accelerated providers;
+    /// emit batch, safety, BOM and reproducible release evidence.
+    M17Smoke {
+        #[arg(long = "input")]
+        input: Vec<PathBuf>,
+        #[arg(long, default_value = "runs/m17-performance")]
+        output: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        workers: usize,
+        #[arg(long, default_value_t = 16_777_216)]
+        max_pixels: u64,
+        #[arg(long = "provider")]
+        providers: Vec<String>,
+        /// Permit an explicitly requested accelerated provider to fall back
+        /// to CPU; strict mode is the default and records any fallback.
+        #[arg(long)]
+        allow_provider_fallback: bool,
     },
 }
 
@@ -537,6 +556,25 @@ fn main() -> Result<()> {
         Command::M12Smoke { output } => write_m12_smoke(&output)?,
         Command::M15Smoke { output } => m15::run(&output)?,
         Command::M16Smoke { output } => m16::run(&output)?,
+        Command::M17Smoke {
+            input,
+            output,
+            workers,
+            max_pixels,
+            providers,
+            allow_provider_fallback,
+        } => m17::run(
+            &output,
+            &input,
+            workers,
+            max_pixels,
+            &if providers.is_empty() {
+                m17::default_provider_names()
+            } else {
+                providers
+            },
+            allow_provider_fallback,
+        )?,
     }
     Ok(())
 }

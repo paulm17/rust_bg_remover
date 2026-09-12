@@ -10,6 +10,26 @@ use crate::{AlphaMask, CanonicalImage, Foreground};
 
 /// Decode JPEG, PNG or WebP and apply EXIF orientation exactly once.
 pub fn load_canonical(path: &Path) -> Result<CanonicalImage> {
+    load_canonical_with_limit(path, u64::MAX)
+}
+
+/// Read encoded dimensions without decoding pixels. Callers can use this to
+/// enforce an aggregate memory budget before any decompression allocation.
+pub fn encoded_dimensions(path: &Path) -> Result<(u32, u32)> {
+    let reader = ImageReader::open(path)
+        .with_context(|| format!("open input image {}", path.display()))?
+        .with_guessed_format()
+        .with_context(|| format!("identify input image {}", path.display()))?;
+    let decoder = reader
+        .into_decoder()
+        .with_context(|| format!("decode input image {}", path.display()))?;
+    Ok(decoder.dimensions())
+}
+
+/// Decode a canonical image only after checking the encoded dimensions. This
+/// keeps the configured pixel budget in front of DynamicImage allocation and
+/// is used by bounded benchmark entry points to reject decompression bombs.
+pub fn load_canonical_with_limit(path: &Path, max_pixels: u64) -> Result<CanonicalImage> {
     let reader = ImageReader::open(path)
         .with_context(|| format!("open input image {}", path.display()))?
         .with_guessed_format()
@@ -17,6 +37,14 @@ pub fn load_canonical(path: &Path) -> Result<CanonicalImage> {
     let mut decoder = reader
         .into_decoder()
         .with_context(|| format!("decode input image {}", path.display()))?;
+    let (encoded_width, encoded_height) = decoder.dimensions();
+    let encoded_pixels = u64::from(encoded_width)
+        .checked_mul(u64::from(encoded_height))
+        .context("encoded image pixel count overflow")?;
+    ensure!(
+        encoded_pixels <= max_pixels,
+        "encoded input exceeds pixel limit: {encoded_pixels} > {max_pixels}"
+    );
     let orientation = decoder
         .orientation()
         .with_context(|| format!("read EXIF orientation {}", path.display()))?;
