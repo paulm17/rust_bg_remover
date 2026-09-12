@@ -1,0 +1,9 @@
+{
+  "soft_alpha_range": 0.6497165388987182,
+  "alpha_gradient": 0.09277876100635954,
+  "local_input_contrast": 0.032587266327547174,
+  "component_topology_risk": 0.25,
+  "cross_model_disagreement": null,
+  "router_risk": 0.2973024066258014,
+  "routed_complementary": false
+}

@@ -1,0 +1,8 @@
+{
+  "route_complementary": true,
+  "complementary_model": true,
+  "adaptive_trimap": true,
+  "crop_refine": true,
+  "selective_foreground": true,
+  "conservative_topology": false
+}

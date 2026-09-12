@@ -41,6 +41,11 @@ runs/m15-tournament/raw-cache-probe/
 !/runs/m15-tournament/report.json
 !/runs/m15-tournament/report.sha256
 !/runs/m15-tournament/report.html
+!/runs/m16-hybrid/
+runs/m16-hybrid/raw-cache/
+!/runs/m16-hybrid/report.json
+!/runs/m16-hybrid/report.sha256
+!/runs/m16-hybrid/report.html
 /models/*.onnx
 /models/*.ort
 !/models/fixtures/

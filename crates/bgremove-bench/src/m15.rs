@@ -1,6 +1,6 @@
 //! M15 staged tournament and deterministic parameter-search harness.
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use bgremove_color::{
     FastForegroundEstimator, FbaForegroundEstimator, MultilevelForegroundEstimator,
     OriginalRgbEstimator,
@@ -500,7 +500,7 @@ struct PairedComparison {
 }
 
 #[derive(Debug, Clone)]
-struct CacheRecord {
+pub(crate) struct CacheRecord {
     input_hash: String,
     manifest_hash: String,
     width: u32,
@@ -509,12 +509,12 @@ struct CacheRecord {
 }
 
 #[derive(Clone)]
-struct RawMaskCache {
+pub(crate) struct RawMaskCache {
     root: PathBuf,
 }
 
 impl RawMaskCache {
-    fn new(root: &Path) -> Result<Self> {
+    pub(crate) fn new(root: &Path) -> Result<Self> {
         ensure!(!root.as_os_str().is_empty(), "M15 cache root is empty");
         ensure!(
             root.components()
@@ -669,7 +669,7 @@ impl RawMaskCache {
         })()
     }
 
-    fn load_or_compute<F>(
+    pub(crate) fn load_or_compute<F>(
         &self,
         input_hash: &str,
         manifest_hash: &str,
@@ -1944,6 +1944,48 @@ impl RealSegmenter {
             Self::Biref(s) => s.predict(image),
         }
     }
+}
+
+/// M16's production adapter reuses the validated M15 ORT constructors.  It
+/// intentionally accepts only the approved P0--P3 source-faithful models;
+/// unavailable specialist/refiner models never fall back to a synthetic mask.
+pub(crate) struct ApprovedRealSession {
+    segmenter: RealSegmenter,
+}
+
+pub(crate) fn open_approved_real_session(id: &str, runtime: &Path) -> Result<ApprovedRealSession> {
+    let manifest_path = repo_path(match id {
+        "P0-u2-cf" => "models/m5_u2net.toml",
+        "P1-isnet-fast" => "models/m4_isnet_fp32.toml",
+        "P2-tracer-fba" => "models/m6_tracer_b7.toml",
+        "P3-biref-vit" => "models/m7_birefnet_general.toml",
+        other => bail!("no approved real M16 session for {other}"),
+    });
+    let manifest_text = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("read approved manifest {}", manifest_path.display()))?;
+    let manifest = parse_toml(&manifest_text)?;
+    ensure!(
+        manifest.intended_use_approved,
+        "manifest intended-use approval is false"
+    );
+    ensure!(
+        manifest.resolve_model_path(&manifest_path).is_ok(),
+        "approved checkpoint is missing"
+    );
+    ensure!(
+        manifest.verify_model_hash(&manifest_path).is_ok(),
+        "approved checkpoint hash failed"
+    );
+    Ok(ApprovedRealSession {
+        segmenter: build_real_segmenter(id, &manifest, &manifest_path, runtime)?,
+    })
+}
+
+pub(crate) fn approved_real_predict(
+    session: &ApprovedRealSession,
+    image: &bgremove_core::CanonicalImage,
+) -> Result<Vec<f32>> {
+    Ok(session.segmenter.predict(image)?.data().to_vec())
 }
 
 fn build_real_segmenter(
@@ -4477,6 +4519,94 @@ fn global_ssim_2d(a: &[f64], b: &[f64], width: u32, height: u32) -> f64 {
             .clamp(0.0, 1.0);
     }
     total / n.max(1) as f64
+}
+
+/// Shared PhotoRoomAgreement-v1 Gaussian SSIM primitive for M16.  Keeping
+/// this wrapper crate-private lets M16 use the exact frozen M15 implementation
+/// without changing any M15 report values.
+pub(crate) fn shared_global_ssim_2d(a: &[f64], b: &[f64], width: u32, height: u32) -> f64 {
+    global_ssim_2d(a, b, width, height)
+}
+
+/// Shared PhotoRoom background definition for companion benchmark modules.
+/// The returned values are already in linear RGB and include the exact
+/// dimension-aware texture generator used by M15.
+pub(crate) fn shared_background_pixel(
+    index: usize,
+    width: u32,
+    height: u32,
+    background: usize,
+) -> [f64; 3] {
+    [0, 1, 2].map(|channel| background_channel(index, channel, width, height, background))
+}
+
+/// End-to-end PhotoRoomAgreement-v1 contract used by M16 parity tests.  The
+/// wrapper enters the frozen M15 evaluator with an identity/original RGB
+/// pipeline, so neither module can drift on ROI construction, boundary
+/// matching, seven backgrounds, PSNR, or the final weighted agreement.
+#[allow(dead_code)]
+#[allow(clippy::type_complexity)]
+pub(crate) fn shared_photoroom_metrics(
+    rgb: &[[f32; 3]],
+    reference_rgb: &[[f32; 3]],
+    candidate_alpha: &[f32],
+    reference_alpha: &[f32],
+    width: u32,
+    height: u32,
+) -> Result<(f64, f64, f64, f64, f64, f64, f64, f64)> {
+    ensure!(rgb.len() == reference_rgb.len());
+    ensure!(rgb.len() == candidate_alpha.len());
+    ensure!(rgb.len() == reference_alpha.len());
+    let image = SyntheticImage {
+        id: "shared-parity".into(),
+        split: Split::Validation,
+        width,
+        height,
+        rgb: rgb.to_vec(),
+        reference_rgb: reference_rgb.to_vec(),
+        truth: reference_alpha.to_vec(),
+        input_hash: String::new(),
+        tags: vec!["shared-parity".into()],
+    };
+    let mut raw = BTreeMap::new();
+    raw.insert(
+        ("shared".into(), image.id.clone()),
+        candidate_alpha.to_vec(),
+    );
+    let pipeline = RankedPipeline {
+        id: "shared+none+none+original@1.000".into(),
+        segmenter: "shared".into(),
+        trimap: "none".into(),
+        refiner: "none".into(),
+        foreground: "original".into(),
+        strength: 1.0,
+        tune: empty_score(),
+        validation: None,
+        selected_on_tune_only: true,
+    };
+    let score = score_one_mode(&pipeline, &image, &raw, EvaluationMode::RealMechanisms);
+    ensure!(!score.failure, "shared M15 metric evaluation failed");
+    Ok((
+        score.agreement,
+        score.roi_alpha_mae,
+        score.roi_soft_iou,
+        score.boundary_f1,
+        score.composite_mae,
+        score.composite_psnr,
+        score.composite_ssim_full,
+        score.composite_ssim_roi,
+    ))
+}
+
+#[allow(dead_code)]
+pub(crate) fn shared_boundary_f1(
+    candidate: &[f32],
+    reference: &[f32],
+    width: u32,
+    height: u32,
+    tolerance: u32,
+) -> f64 {
+    boundary_f1_at_tolerance(candidate, reference, width, height, tolerance)
 }
 
 fn binary_iou(a: &[f32], b: &[f32], threshold: f32) -> f64 {

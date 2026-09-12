@@ -1,5 +1,6 @@
 // M0 corpus validator and M2 deterministic benchmark implementation.
 mod m15;
+mod m16;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use bgremove_color::OriginalRgbEstimator;
@@ -229,6 +230,12 @@ enum Command {
     #[command(alias = "m15")]
     M15Smoke {
         #[arg(long, default_value = "runs/m15-tournament")]
+        output: PathBuf,
+    },
+    /// Run the evidence-driven P5 hybrid contract and fail-closed real arena status.
+    #[command(alias = "m16")]
+    M16Smoke {
+        #[arg(long, default_value = "runs/m16-hybrid")]
         output: PathBuf,
     },
 }
@@ -529,6 +536,7 @@ fn main() -> Result<()> {
         Command::M11Smoke { output } => write_m11_smoke(&output)?,
         Command::M12Smoke { output } => write_m12_smoke(&output)?,
         Command::M15Smoke { output } => m15::run(&output)?,
+        Command::M16Smoke { output } => m16::run(&output)?,
     }
     Ok(())
 }

@@ -1,0 +1,17 @@
+{
+  "agreement": 0.3099573379082602,
+  "alpha_mae": 0.6532325057778507,
+  "roi_alpha_mae": 0.6532325057754255,
+  "alpha_rmse": 0.6720896233481779,
+  "soft_iou": 0.1499049402106741,
+  "roi_soft_iou": 0.1499049402106741,
+  "boundary_f1": 0.2038216560509554,
+  "composite_mae": 0.22094655135750174,
+  "composite_psnr": 9.086409305524969,
+  "composite_ssim": 0.4605902395412765,
+  "composite_ssim_full": 0.4605902395412765,
+  "gradient_error": 0.06459421362614612,
+  "fractional_alpha_error": 0.5050969604422285,
+  "failure": false,
+  "failure_reason": null
+}

@@ -1,0 +1,31 @@
+{
+  "sample_count": 6,
+  "operation_samples": [
+    89088,
+    103936,
+    111360,
+    118784,
+    129920,
+    148480
+  ],
+  "operation_median": 118784,
+  "operation_p95": 148480,
+  "working_buffer_bytes": 701568,
+  "wall_clock_ms": 824.664458,
+  "warm_median_ms": 824.664458,
+  "warm_p95_ms": 856.689083,
+  "peak_memory_bytes": 701568,
+  "warmups": 2,
+  "raw_warm_samples_ms": [
+    813.2235410000001,
+    818.2496249999999,
+    824.664458,
+    856.689083,
+    827.7393750000001
+  ],
+  "timing_resolution_ms": 0.001,
+  "platform": "macos",
+  "wall_clock_reason": "measured with monotonic Instant after two warmups; volatile performance fields are excluded from quality hashes",
+  "method": "warm wall-clock timing plus conservative modeled live-buffer upper bound; five samples",
+  "memory_measurement": "modeled upper bound only: source-sized alpha/uncertainty/trimap/foreground/topology arrays plus 2x crop scratch; allocator/RSS peak is unavailable"
+}

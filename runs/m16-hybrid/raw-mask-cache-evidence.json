@@ -1,0 +1,22 @@
+{
+  "input_hashes": [
+    "a447d80520f44536371e81863d8e935050462c8f4fb71005e2c40bd1f399592e",
+    "1622e6dd3bf5dfd54c13ae26ae50a002a885dfe578469c4267e811a80e519ae2",
+    "efb97ef4940d2f9abfb944278daffbccfb6140a6b6257b51a4aa93d7b3446d54",
+    "f761d01bb40dbc3d9bc88fe9b27117d7531789a5f253e9b4bcfa403c77d9db30",
+    "b21793d8978abfd94ba59989a97a45a8538e258a33b54d11e849685228300985",
+    "b87f1f403c2336fd198fbe9178ef71911c6a4a0ec2cc4e824694aee3a07afdea"
+  ],
+  "manifest_hash": "d16d91bb05f13639b6402ae39f7c9849c3872f27231f4336a2d9123627db2212",
+  "miss_count": 6,
+  "hit_count": 42,
+  "inference_calls": 6,
+  "downstream_variant_requests": 42,
+  "corruption_detected": true,
+  "stale_manifest_miss": true,
+  "incompatible_dimensions_rejected": true,
+  "unique_key_count": 6,
+  "on_disk_atomic_write_verified": true,
+  "on_disk_round_trip_verified": true,
+  "status": "real-input-RGB-hash + exact validated manifest bytes; downstream variants reused raw masks"
+}

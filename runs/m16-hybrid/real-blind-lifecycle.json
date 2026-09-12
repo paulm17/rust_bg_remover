@@ -1,0 +1,12 @@
+{
+  "state": "untouched",
+  "observation_count": 0,
+  "influenced_change": false,
+  "new_untouched_set_required": false,
+  "eligible_for_one_promotion": false,
+  "blind_used_for_sweeps": false,
+  "blind_used_for_promotion": false,
+  "registered_set_id": null,
+  "registered_manifest_hash": null,
+  "registered_image_count": 0
+}

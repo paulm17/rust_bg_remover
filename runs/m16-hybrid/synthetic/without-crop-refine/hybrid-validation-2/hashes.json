@@ -1,0 +1,90 @@
+[
+  {
+    "path": "adaptive-trimap.png",
+    "sha256": "c68efcab6e27cb25cc7c5b5d125c410bc53ec297aa89284c9c46d2065297726a"
+  },
+  {
+    "path": "alpha-diff.png",
+    "sha256": "a9d1f84b52da40221768724730ad9cca20f9e3e01c731a96ec0e8f0c31ec3b4c"
+  },
+  {
+    "path": "boundary-diff.png",
+    "sha256": "2e50875cc2dfc56944802587f924a5a73ea591747691d42d8e733231989e43e4"
+  },
+  {
+    "path": "coarse-alpha.png",
+    "sha256": "c6604ce1dc9b76996a0ba9a60108b91ae34a194ba6d84c84eae818d6c2557a79"
+  },
+  {
+    "path": "complementary-alpha.png",
+    "sha256": "9cff83aa6ab82844e455d171abdfbd26280c7d76144cab077e4aae1aa209895d"
+  },
+  {
+    "path": "composite-black.png",
+    "sha256": "a06ae74aa1b3590c76b89d21f3d04dd71f642db259bdf79adec853fd13b5025b"
+  },
+  {
+    "path": "composite-white.png",
+    "sha256": "969056208e6f319295594392c18e28237d9d846752bd92391ae4aa6aad867a69"
+  },
+  {
+    "path": "crop-manifest.json",
+    "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+  },
+  {
+    "path": "crop-weights.png",
+    "sha256": "298bd2bdcc464eb1281461b98a201cdf25f076d433e011a94396bcc0af73520d"
+  },
+  {
+    "path": "cutout.png",
+    "sha256": "098c85e3179b3669dbe96ffb1761554e2faab67aaeefaa42d5ec135abfe2f284"
+  },
+  {
+    "path": "feature-map.json",
+    "sha256": "337d9ecb88277fdf2104e8d4e5cd41a9634344399f9d0c510ab27cade0eeba7a"
+  },
+  {
+    "path": "foreground-risk.png",
+    "sha256": "4442ca0643694154bab3f46f987d79a8ccc9425ad751241b955eeffc816b9484"
+  },
+  {
+    "path": "foreground.png",
+    "sha256": "f058b7c829fcd0a633bd93ef98ebab4d1892f00a952aec073a2dcaa102de9051"
+  },
+  {
+    "path": "global-alpha.png",
+    "sha256": "c6604ce1dc9b76996a0ba9a60108b91ae34a194ba6d84c84eae818d6c2557a79"
+  },
+  {
+    "path": "input.png",
+    "sha256": "e544c2157e1fb481f8006eaa07f8f02caaebe9666527dd116d8ada90a9722e35"
+  },
+  {
+    "path": "metrics.json",
+    "sha256": "e8a716a649c90160fb1fe21eafc13cbde2b52e1e4216199e03d4086202a7e47c"
+  },
+  {
+    "path": "reference-alpha.png",
+    "sha256": "d009dda55045d0ec8290caed1d004531c1d23b5f6445e72c43599b2400d5611a"
+  },
+  {
+    "path": "refined-alpha.png",
+    "sha256": "6880a58ade095009bc5071913ffed1c9d4cec4e1b5dfff9180cb97239138859b"
+  },
+  {
+    "path": "resolved-config.json",
+    "sha256": "4719f9e4c7865ad6736ddabc7737c4d812a4b60a95b95d146080ece4120105ac"
+  },
+  {
+    "path": "router-decision.json",
+    "sha256": "d756bd0e2075f01d23c10ffdf6968130ce674475c7505885e6c7024c22b39dea"
+  },
+  {
+    "path": "topology-decision.png",
+    "sha256": "dbe27a847c26683f621e4ae8e95a9455d3993628f93fdf284af9e9760d5fce02"
+  },
+  {
+    "path": "uncertainty.png",
+    "sha256": "d992e297709232ea96c915781947b87bbae63af8e7b477b84be1429847066ea8"
+  }
+]
